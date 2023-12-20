@@ -9,7 +9,7 @@ try:
 except ImportError:
     assert False, "open_clip is not installed, install it with `pip install open-clip-torch`"
 
-from l3gos.encoders.image_encoder import (BaseImageEncoder,
+from l3gs.encoders.image_encoder import (BaseImageEncoder,
                                          BaseImageEncoderConfig)
 from nerfstudio.viewer_beta.viewer_elements import ViewerText
 
@@ -22,6 +22,10 @@ class OpenCLIPNetworkConfig(BaseImageEncoderConfig):
     clip_n_dims: int = 512
     negatives: Tuple[str] = ("object", "things", "stuff", "texture")
     device: str = 'cuda'
+
+    @property
+    def name(self) -> str:
+        return "openclip_{}_{}".format(self.clip_model_type, self.clip_model_pretrained)
 
 
 class OpenCLIPNetwork(BaseImageEncoder):

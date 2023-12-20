@@ -141,6 +141,8 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """stop splitting at this step"""
     sh_degree: int = 4
     """maximum degree of spherical harmonics to use"""
+    clip_loss_weight: float = 0.1
+    """weight of clip loss"""
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="off")
     """camera optimizer config"""
     max_gauss_ratio: float = 5.0

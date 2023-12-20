@@ -74,6 +74,16 @@ class L3GSDataManagerConfig(DataManagerConfig):
     """Specifies the image indices to use during eval; if None, uses all."""
     cache_images: Literal["no-cache", "cpu", "gpu"] = "cpu"
     """Whether to cache images in memory. If "numpy", caches as numpy arrays, if "torch", caches as torch tensors."""
+    patch_tile_size_range: Tuple[int, int] = (0.05, 0.5)
+    """The range of tile sizes to sample from for patch-based training"""
+    patch_tile_size_res: int = 7
+    """The number of tile sizes to sample from for patch-based training"""
+    patch_stride_scaler: float = 0.5
+    """The stride scaler for patch-based training"""
+    image_encoder: BaseImageEncoderConfig = BaseImageEncoderConfig()
+    """specifies the vision-language network config"""
+    clip_downscale_factor: int = 4
+    """The downscale factor for the clip pyramid"""
 
 
 class L3GSDataManager(DataManager, Generic[TDataset]):
@@ -133,13 +143,13 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         super().__init__()
 
-        self.image_encoder: BaseImageEncoder = self.config.network.setup()
+        self.image_encoder: BaseImageEncoder = self.config.image_encoder
 
-        images = [self.cached_train[i]["image"].permute(2, 0, 1)[None, ...] for i in range(len(self.cached_train))]
-        images = torch.cat(images)
+        # images = [self.cached_train[i]["image"].permute(2, 0, 1)[None, ...] for i in range(len(self.cached_train))]
+        # images = torch.cat(images)
         cache_dir = f"outputs/{self.config.dataparser.data.name}"
         clip_cache_path = Path(osp.join(cache_dir, f"clip_{self.image_encoder.name}"))
-        dino_cache_path = Path(osp.join(cache_dir, "dino.npy"))
+        # dino_cache_path = Path(osp.join(cache_dir, "dino.npy"))
         # NOTE: cache config is sensitive to list vs. tuple, because it checks for dict equality
         # self.dino_dataloader = DinoDataloader(
         #     image_list=images,
@@ -148,19 +158,24 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         #     cache_path=dino_cache_path,
         # )
         torch.cuda.empty_cache()
+
+        h = self.train_dataparser_outputs.metadata['image_height']
+        w = self.train_dataparser_outputs.metadata['image_width']
+
         self.clip_interpolator = PyramidEmbeddingDataloader(
-            image_list=images,
-            device=device,
+            image_list=[],
+            device='cuda:0',
             cfg={
                 "tile_size_range": list(self.config.patch_tile_size_range),
                 "tile_size_res": self.config.patch_tile_size_res,
                 "stride_scaler": self.config.patch_stride_scaler,
-                "image_shape": list(images.shape[2:4]),
-                "model_name": self.image_encoder.name,
+                "image_shape": [h,w],
             },
             cache_path=clip_cache_path,
-            model=self.image_encoder,
+            network=self.image_encoder,
         )
+        self.clip_interpolator.start()
+        self.clip_interpolator.create(None, self.image_encoder.setup())
 
         self.curr_scale = None
         self.random_pixels = None
@@ -464,6 +479,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         assert len(self.eval_dataset.cameras.shape) == 1, "Assumes single batch dimension"
         camera = self.eval_dataset.cameras[image_idx : image_idx + 1].to(self.device)
         return camera, data
+    
     def setup_train(self):
         """Sets up the data loaders for training"""
         assert self.train_dataset is not None
@@ -503,13 +519,14 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # print(self.train_dataset.get_data)
         # print(self.train_dataset[-1])
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
-        # dino = dino.to(self.device)
-        # for i, tr in enumerate(self.clip_interpolator.tile_sizes):
-        #     clip[i] = clip[i].to(self.device)
-        #     if self.clip_interpolator.data_dict[i].data is not None:
-        #         self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
-        #     else:
-        #         self.clip_interpolator.data_dict[i].data = clip[i]
+        self.clip_interpolator.add_images(img.unsqueeze(0))
+        dino = dino.to(self.device)
+        for i, tr in enumerate(self.clip_interpolator.tile_sizes):
+            clip[i] = clip[i].to(self.device)
+            if self.clip_interpolator.data_dict[i].data is not None:
+                self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
+            else:
+                self.clip_interpolator.data_dict[i].data = clip[i]
         # if self.dino_dataloader.data is None:
         #     self.dino_dataloader.data = dino
         # else:
