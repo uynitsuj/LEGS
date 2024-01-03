@@ -148,11 +148,12 @@ class PyramidEmbeddingDataloader(FeatureDataloader, mp.Process):
 
             if len(img_batch) == 0:
                 continue
-
             start = time.time()
             for i, tr in enumerate(tqdm(self.tile_sizes, desc="Scales")):
                 self.data_dict[i].add_images(img_batch)
             
+            assert len(self.data_dict) != 0
+
             for _ in img_batch:
                 updates = []
                 for i, tr in enumerate(self.tile_sizes):

@@ -5,8 +5,8 @@ version = "0.1.1"
 requires-python = ">=3.8"
 
 dependencies=[
-    "nerfstudio@git+https://github.com/nerfstudio-project/nerfstudio@626441e15e8e59970ba95229e40727458bbf65a3",
-    "gsplat@git+https://github.com/nerfstudio-project/gsplat.git",
+    "nerfstudio@git+https://github.com/nerfstudio-project/nerfstudio@a8e6f8fa3fd6c0ad2f3e681dcf1519e74ad2230f",
+    "gsplat@git+https://github.com/nerfstudio-project/gsplat@013352027b02360036addb2beadebf92f67feb3e",
     "Pillow >=9.3.0, <10.0.0"
 ]
 [tool.setuptools]

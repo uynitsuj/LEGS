@@ -39,6 +39,7 @@ import numpy as np
 # from sklearn.neighbors import NearestNeighbors
 import viser.transforms as vtf
 # from nerfstudio.model_components.losses import scale_gauss_gradients_by_distance_squared
+from nerfstudio.viewer_beta.viewer_elements import ViewerButton, ViewerSlider, ViewerControl, ViewerVec3
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
 from nerfstudio.models.gaussian_splatting import GaussianSplattingModelConfig, GaussianSplattingModel
 from l3gs.fields.gaussian_lerf_field import GaussianLERFField
@@ -52,7 +53,7 @@ from gsplat.project_gaussians import ProjectGaussians
 from nerfstudio.model_components.losses import depth_ranking_loss
 from gsplat.sh import SphericalHarmonics, num_sh_bases
 from pytorch_msssim import  SSIM
-
+from nerfstudio.utils.colormaps import apply_colormap
 
 def random_quat_tensor(N):
     """
@@ -209,6 +210,18 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
 
         self.crop_box: Optional[OrientedBox] = None
         self.back_color = torch.zeros(3)
+        self.viewer_control = ViewerControl()
+        # self.viser_scale_ratio = 0.1
+
+        self.crop_to_word = ViewerButton("Crop gaussians to word", cb_hook=self.crop_to_word_cb)
+        self.reset_crop = ViewerButton("Reset crop", cb_hook=self.reset_crop_cb)
+        self.crop_scale = ViewerSlider("Crop scale", 0.1, 0, 3.0, 0.01)
+        self.relevancy_thresh = ViewerSlider("Relevancy Thresh", 0.5, 0, 1.0, 0.01)
+
+        self._crop_center_init = None
+        self.crop_ids = None#torch.ones_like(self.means[:,0],dtype=torch.bool)
+        self.dropout_mask = None
+        self.original_means = None
 
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
             num_cameras=self.num_train_data, device="cpu"
@@ -797,3 +810,133 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
 
         return loss_dict
+    
+    def crop_to_word_cb(self,element):
+        with torch.no_grad():
+            # clip_feats = self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1,keepdim=True), self.crop_scale.value * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+            # clip_feats = self.gaussian_lerf_field.get_outputs(self.means, self.crop_scale.value * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+            # clip_feats = self.gaussian_lerf_field.get_outputs(self.means, self.best_scales[0].to(self.device) * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+
+            # Do K nearest neighbors for each point and then avg the clip hash for each point based on the KNN
+            distances, indicies = self.k_nearest_sklearn(self.means.data, 3, True)
+            distances = torch.from_numpy(distances).to(self.device)
+            indicies = torch.from_numpy(indicies).to(self.device).view(-1)
+            weights = torch.sigmoid(self.opacities[indicies].view(-1, 4))
+            weights = torch.nn.Softmax(dim=-1)(weights)
+            points = self.means[indicies]
+            # clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+            clip_hash_encoding = self.gaussian_lerf_field.get_hash(points)
+            clip_hash_encoding = clip_hash_encoding.view(-1, 4, clip_hash_encoding.shape[1])
+            clip_hash_encoding = (clip_hash_encoding * weights.unsqueeze(-1))
+            clip_hash_encoding = clip_hash_encoding.sum(dim=1)
+            clip_feats = self.gaussian_lerf_field.get_outputs_from_feature(clip_hash_encoding, self.best_scales[0].to(self.device) * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+            relevancy = self.image_encoder.get_relevancy(clip_feats / (clip_feats.norm(dim=-1, keepdim=True)+1e-6), 0).view(self.num_points, -1)
+            color = apply_colormap(relevancy[..., 0:1])
+            self.viewer_control.viser_server.add_point_cloud("relevancy", self.means.numpy(force=True) * 10, color.numpy(force=True), 0.01)
+
+            # Add a slider to debug the relevancy values
+            
+            # self.crop_ids = (relevancy[..., 0] > self.relevancy_thresh.value)
+            
+            #Define all crop viewer elements
+            self.crop_points = relevancy[..., 0] > self.relevancy_thresh.value
+            self._crop_center_init = self.means[self.crop_points].mean(dim=0).cpu().numpy()
+            self.original_means = self.means.data.clone()
+
+            self._crop_handle = self.viewer_control.viser_server.add_transform_controls("Crop Points", depth_test=False, line_width=4.0)
+            world_center = tuple(p / self.viser_scale_ratio for p in self._crop_center_init)
+            self._crop_handle.position = world_center
+
+            @self._crop_handle.on_update
+            def _update_crop_handle(han):
+                # import pdb; pdb.set_trace()
+                if self._crop_center_init is None:
+                    return
+                # import pdb; pdb.set_trace()
+                new_center = np.array(self._crop_handle.position) * self.viser_scale_ratio
+                delta = new_center - self._crop_center_init
+                displacement = torch.zeros_like(self.means)
+                displacement[self.crop_points] = torch.from_numpy(delta).to(self.device).to(self.means.dtype)
+                
+                curr_to_world = torch.from_numpy(vtf.SE3(np.concatenate((self._crop_handle.wxyz, self._crop_handle.position * self.viser_scale_ratio))).as_matrix()).to(self.device).to(self.means.dtype)
+                transform = torch.from_numpy(vtf.SE3(np.concatenate((self._crop_handle.wxyz, (self._crop_handle.position * self.viser_scale_ratio) - self._crop_center_init))).as_matrix()).to(self.device).to(self.means.dtype)
+
+                print(f"transform {transform}")
+                transformed_points = self.original_means.clone()
+                homogeneous_points = torch.cat((transformed_points[self.crop_points], torch.ones(transformed_points[self.crop_points].shape[0], 1, device=self.device, dtype=self.means.dtype)), dim=1)
+                transformed_homogeneous = curr_to_world @ transform @ torch.inverse(curr_to_world) @ homogeneous_points.transpose(0,1)
+                transformed_homogeneous = transformed_homogeneous.transpose(0,1)
+                transformed_points[self.crop_points] = transformed_homogeneous[:, :3] / transformed_homogeneous[:, 3:4]
+                self.means.data = transformed_points
+
+            # self._crop_center.value = tuple(p / self.viser_scale_ratio for p in self._crop_center_init)
+
+            self.viewer_control.viser_server.add_point_cloud("Centroid", self._crop_center_init / self.viser_scale_ratio, np.array([0,0,0]), 0.1)
+
+    def reset_crop_cb(self,element):
+        self.crop_ids = None#torch.ones_like(self.means[:,0],dtype=torch.bool)
+        self.means.data = self.original_means
+        self._crop_center_init = None
+        self._crop_handle.visible = False
+        
+    def get_max_across(self, xys, depths, radii, conics, num_tiles_hit, opacities, h, w, preset_scales=None):
+        # probably not a good idea bc it's prob going to be a lot of memory
+        n_phrases = len(self.image_encoder.positives)
+        n_phrases_maxs = [None for _ in range(n_phrases)]
+        n_phrases_sims = [None for _ in range(n_phrases)]
+        scales_list = torch.linspace(0.0, 1.5, 30).to(self.device)
+        # scales_list = [0.1]
+        all_probs = []
+
+        with torch.no_grad():
+            clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+            # print(type(clip_hash_encoding))
+            # print(clip_hash_encoding.ndimension())
+            # print(clip_hash_encoding.size(1))
+            # import pdb; pdb.set_trace()
+            clip_output = NDRasterizeGaussians.apply(
+                            xys,
+                            depths,
+                            radii,
+                            conics,
+                            num_tiles_hit,
+                            # self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32),
+                            # self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True),
+                            # clip_hash_encoding / clip_hash_encoding.norm(dim=-1, keepdim=True),
+                            clip_hash_encoding,
+                            opacities,
+                            h,
+                            w,
+                            # torch.zeros(self.image_encoder.embedding_dim, device=self.device),
+                            torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                        )
+            # Normalize the clip output
+            # clip_output = clip_output / (clip_output.norm(dim=-1, keepdim=True) + 1e-6)
+        for i, scale in enumerate(scales_list):
+            with torch.no_grad():
+                clip_output_im = self.gaussian_lerf_field.get_outputs_from_feature(clip_output.view(h*w, -1), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32).view(h, w, -1)
+
+            for j in range(n_phrases):
+                if preset_scales is None or j == i:
+                    # relevancy_rasterized = NDRasterizeGaussians.apply(
+                    #         xys,
+                    #         depths,
+                    #         radii,
+                    #         conics,
+                    #         num_tiles_hit,
+                    #         self.image_encoder.get_relevancy(self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32), j)[..., 0:1],
+                    #         opacities,
+                    #         h,
+                    #         w,
+                    #         torch.zeros(1, device=self.device),
+                    #     )
+                    
+                    probs = self.image_encoder.get_relevancy(clip_output_im.view(-1, self.image_encoder.embedding_dim), j)
+                    pos_prob = probs[..., 0:1]
+                    all_probs.append((pos_prob.max(), scale))
+                    if n_phrases_maxs[j] is None or pos_prob.max() > n_phrases_sims[j].max():
+                        n_phrases_maxs[j] = scale
+                        n_phrases_sims[j] = pos_prob
+        # print(f"Best scales: {n_phrases_maxs}")#, Words: {self.image_encoder.positives}, Scale List: {scales_list}, All probs: {all_probs}")
+        # import pdb; pdb.set_trace()
+        return torch.stack(n_phrases_sims), torch.Tensor(n_phrases_maxs)#, relevancy_rasterized

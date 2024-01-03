@@ -33,15 +33,16 @@ l3gs_method = MethodSpecification(
             datamanager=L3GSDataManagerConfig(
                 _target=L3GSDataManager[L3GSDataset],
                 dataparser=L3GSDataParserConfig(),
-                image_encoder=OpenCLIPNetworkConfig(
-                    clip_model_type="ViT-B-16", clip_model_pretrained="laion2b_s34b_b88k", clip_n_dims=512
-                ),
+                
                 #  You can swap the type of input encoder by specifying different NetworkConfigs, the one below uses OpenAI CLIP, the one above uses OpenCLIP
                 # image_encoder=CLIPNetworkConfig(
                 #     clip_model_type="ViT-B/16", clip_n_dims=512
                 # )
             ),
             model=LLGaussianSplattingModelConfig(),
+            network=OpenCLIPNetworkConfig(
+                    clip_model_type="ViT-B-16", clip_model_pretrained="laion2b_s34b_b88k", clip_n_dims=512
+            ),
             depthmodel=ZoeDepthNetworkConfig(),
         ),
         optimizers={

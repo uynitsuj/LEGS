@@ -80,7 +80,7 @@ class L3GSDataManagerConfig(DataManagerConfig):
     """The number of tile sizes to sample from for patch-based training"""
     patch_stride_scaler: float = 0.5
     """The stride scaler for patch-based training"""
-    image_encoder: BaseImageEncoderConfig = BaseImageEncoderConfig()
+    network: BaseImageEncoderConfig = BaseImageEncoderConfig()
     """specifies the vision-language network config"""
     clip_downscale_factor: int = 4
     """The downscale factor for the clip pyramid"""
@@ -104,9 +104,12 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         test_mode: Literal["test", "val", "inference"] = "val",
         world_size: int = 1,
         local_rank: int = 0,
+        clip_out_queue: Optional[mp.Queue] = None,
+        network: BaseImageEncoderConfig = BaseImageEncoderConfig(),
         **kwargs,
     ):
         self.config = config
+        self.network = network
         self.device = device
         self.world_size = world_size
         self.local_rank = local_rank
@@ -142,13 +145,15 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # assert len(self.train_unseen_cameras) > 0, "No data found in dataset"
 
         super().__init__()
+        self.clip_out_queue = clip_out_queue
 
-        self.image_encoder: BaseImageEncoder = self.config.image_encoder
+
+        # self.network: BaseImageEncoder = self.config.network
 
         # images = [self.cached_train[i]["image"].permute(2, 0, 1)[None, ...] for i in range(len(self.cached_train))]
         # images = torch.cat(images)
         cache_dir = f"outputs/{self.config.dataparser.data.name}"
-        clip_cache_path = Path(osp.join(cache_dir, f"clip_{self.image_encoder.name}"))
+        clip_cache_path = Path(osp.join(cache_dir, f"clip_{self.network.name}"))
         # dino_cache_path = Path(osp.join(cache_dir, "dino.npy"))
         # NOTE: cache config is sensitive to list vs. tuple, because it checks for dict equality
         # self.dino_dataloader = DinoDataloader(
@@ -172,10 +177,11 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                 "image_shape": [h,w],
             },
             cache_path=clip_cache_path,
-            network=self.image_encoder,
+            out_queue= self.clip_out_queue,
+            # network=self.network,
         )
         self.clip_interpolator.start()
-        self.clip_interpolator.create(None, self.image_encoder.setup())
+        self.clip_interpolator.create(None, self.network.setup())
 
         self.curr_scale = None
         self.random_pixels = None
@@ -403,7 +409,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         Returns a Camera instead of raybundle"""
         # print(len(self.train_unseen_cameras))
-        # print(self.train_unseen_cameras)
+        print(self.train_unseen_cameras)
         image_idx = self.train_unseen_cameras.pop()
         # print(image_idx)
         # Make sure to re-populate the unseen cameras list if we have exhausted it
@@ -411,6 +417,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
             self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
         
         # start = time.time()
+        # import pdb; pdb.set_trace()
         data = copy(self.cached_train[image_idx])
         # import pdb; pdb.set_trace()
         data["image"] = data["image"].to(self.device)
@@ -499,8 +506,8 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         5. make sure we set the mask for the image we just added         (We should handle masks in the pipeline because adding one image requires adding a bunch of masks)
         """
         # ----------------- Handling the lerf features ----------------
-        pass
-        # self.clip_interpolator.add_images(img.unsqueeze(0))
+        # pass
+        self.clip_interpolator.add_images(img.unsqueeze(0))
         # self.dino_dataloader.add_images(img.unsqueeze(0))
 
 
@@ -520,7 +527,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # print(self.train_dataset[-1])
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
         self.clip_interpolator.add_images(img.unsqueeze(0))
-        dino = dino.to(self.device)
+        # dino = dino.to(self.device)
         for i, tr in enumerate(self.clip_interpolator.tile_sizes):
             clip[i] = clip[i].to(self.device)
             if self.clip_interpolator.data_dict[i].data is not None:

@@ -110,7 +110,7 @@ class L3GSPipeline(VanillaPipeline):
         model_name : str = "dino_vits8",
         dino_thres : float = 0.4, 
         clip_out_queue : Optional[mp.Queue] = None,
-        dino_out_queue : Optional[mp.Queue] = None,
+        # dino_out_queue : Optional[mp.Queue] = None,
         use_depth = True, 
         use_rgb = False, 
         use_vit = False, 
@@ -119,7 +119,7 @@ class L3GSPipeline(VanillaPipeline):
         self.config = config
         self.test_mode = test_mode
         self.clip_out_queue = clip_out_queue
-        self.dino_out_queue = dino_out_queue
+        # self.dino_out_queue = dino_out_queue
         self.datamanager: L3GSDataManager = config.datamanager.setup(
             device=device,
             test_mode=test_mode,
@@ -127,10 +127,10 @@ class L3GSPipeline(VanillaPipeline):
             local_rank=local_rank,
             network=self.config.network,
             clip_out_queue=self.clip_out_queue,
-            dino_out_queue=self.dino_out_queue,
+            # dino_out_queue=self.dino_out_queue,
         )
         self.datamanager.to(device)
-        self.image_encoder: BaseImageEncoder = config.network
+        self.image_encoder: BaseImageEncoder = config.network.setup()
         # TODO(ethan): get rid of scene_bounds from the model
         assert self.datamanager.train_dataset is not None, "Missing input dataset"
 

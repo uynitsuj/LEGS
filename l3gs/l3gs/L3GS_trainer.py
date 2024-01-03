@@ -340,14 +340,14 @@ class Trainer:
         returns the image, depth, and pose if the dataparser is defined yet, otherwise None
         if decode_only, don't add the image to the clip/dino queue using `add_image`.
         '''
-        image: Image = msg.img
+        # image: Image = msg.img
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
-        # CONSOLE.print("Adding image to dataset")
-        # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
+        # # CONSOLE.print("Adding image to dataset")
+        # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
         image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
-        # By default the D4 VPU provides 16bit depth with a depth unit of 1000um (1mm).
-        # --> depth_data is in meters.
-        depth_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
+        # # By default the D4 VPU provides 16bit depth with a depth unit of 1000um (1mm).
+        # # --> depth_data is in meters.
+        # depth_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
@@ -358,22 +358,22 @@ class Trainer:
         camera_type = CameraType.PERSPECTIVE
         c = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
         retc = deepcopy(c)
-        img_out=image_data.clone()
-        dep_out=depth_data.clone()
+        # img_out=image_data.clone()
+        # dep_out=depth_data.clone()
         if not decode_only:
             # with self.train_lock:
             self.pipeline.add_image(img = image_data, pose = c)
-        dep_out *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        #TODO add the dataparser transform here
-        H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
-        row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=retc.camera_to_worlds.device)
-        retc.camera_to_worlds = torch.matmul(torch.cat([H,row]),torch.cat([retc.camera_to_worlds,row]))[:3,:]
-        retc.camera_to_worlds[:3,3] *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        if not self.done_scale_calc:
-            return None,None,None
-        return img_out, dep_out, retc
+        # dep_out *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+        # #TODO add the dataparser transform here
+        # H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
+        # row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=retc.camera_to_worlds.device)
+        # retc.camera_to_worlds = torch.matmul(torch.cat([H,row]),torch.cat([retc.camera_to_worlds,row]))[:3,:]
+        # retc.camera_to_worlds[:3,3] *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+        # if not self.done_scale_calc:
+        #     return None,None,None
+        # return img_out, dep_out, retc
 
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera):
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 300):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -401,7 +401,7 @@ class Trainer:
 
         ### simple uniform sampling approach
         num_points = flat_depth.shape[0]
-        num_samples = 300
+        # num_samples = 300
         sampled_indices = torch.randint(0, num_points, (num_samples,))
 
         sampled_depth = flat_depth[sampled_indices] * scale
@@ -500,7 +500,7 @@ class Trainer:
             local_rank=self.local_rank,
             grad_scaler=self.grad_scaler,
             clip_out_queue=self.clip_out_queue,
-            dino_out_queue=self.dino_out_queue,
+            # dino_out_queue=self.dino_out_queue,
         )
 
         # self.pipeline.lifelong_exp_aname = ViewerText(name="Exp name", default_value="")
@@ -622,8 +622,10 @@ class Trainer:
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
                     if self.calculate_diff:
+                        # TODO: Kishore and Justin
                         raise NotImplementedError
                     else:
+                        self.add_img_callback(msg)
                         self.image_process_queue.append(msg)
 
                     if not self.done_scale_calc:
@@ -631,7 +633,8 @@ class Trainer:
 
                 
                 while len(self.image_process_queue) > 0:
-                    self.process_image(self.image_process_queue.pop(0), step)
+                # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
+                    self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
 
                 if self.training_state == "paused":
                     time.sleep(0.01)
@@ -647,7 +650,7 @@ class Trainer:
 
                 # Create scene scale based on the images collected so far. This is done once.
                 if not self.done_scale_calc:
-                    # print("Scale calc")
+                    print("Scale calc")
                     self.done_scale_calc = True
                     from nerfstudio.cameras.camera_utils import auto_orient_and_center_poses
                     poses = [np.concatenate([ros_pose_to_nerfstudio(p),np.array([[0,0,0,1]])],axis=0) for p in parser_scale_list]
