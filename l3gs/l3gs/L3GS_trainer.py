@@ -709,19 +709,13 @@ class Trainer:
                         loss, loss_dict, metrics_dict = self.train_iteration(step)
                         
                         # add deprojected gaussians from monocular depth
-                        # import pdb; pdb.set_trace()
-                        # param_groups = self.get_gaussian_param_groups()
-                        # for group, param in param_groups.items()
                         expain = []
                         for group, _ in self.pipeline.model.get_gaussian_param_groups().items():
                             expain.append("exp_avg" in self.optimizers.optimizers[group].state[self.optimizers.optimizers[group].param_groups[0]["params"][0]].keys())
                         if all(expain):
-                            # self.pipeline.model.add_deprojected_means(pop_n_elements(self.deprojected_queue, num_add), pop_n_elements(self.colors_queue, num_add), self.optimizers)
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
-                            # import pdb; pdb.set_trace()
-                        # self.deprojected_queue.clear()
-                        # self.colors_queue.clear()
+
 
                         # training callbacks after the training iteration
                         for callback in self.callbacks:

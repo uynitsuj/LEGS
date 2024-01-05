@@ -526,7 +526,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # print(self.train_dataset.get_data)
         # print(self.train_dataset[-1])
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
-        self.clip_interpolator.add_images(img.unsqueeze(0))
+        # self.clip_interpolator.add_images(img.unsqueeze(0))
         # dino = dino.to(self.device)
         for i, tr in enumerate(self.clip_interpolator.tile_sizes):
             clip[i] = clip[i].to(self.device)
