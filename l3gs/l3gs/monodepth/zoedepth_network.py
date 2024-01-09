@@ -12,7 +12,7 @@ import numpy as np
 @dataclass
 class ZoeDepthNetworkConfig(InstantiateConfig):
     _target: Type = field(default_factory=lambda: ZoeDepthNetwork)
-    depth_model: str = 'ZoeD_NK' #ZoeD_NK, ZoeD_N, ZoeD_K
+    depth_model: str = 'ZoeD_N' #ZoeD_NK, ZoeD_N, ZoeD_K
     repo = "isl-org/ZoeDepth"
     device: str = 'cuda'
 
@@ -21,7 +21,7 @@ class ZoeDepthNetwork():
     def __init__(self, config: ZoeDepthNetworkConfig):
         # super().__init__()
         self.config = config
-
+        torch.hub._validate_not_a_forked_repo=lambda a,b,c: True
         self.model = torch.hub.load(self.config.repo, self.config.depth_model, pretrained=True)
         # self.model = self.model.to(self.config.device)
 

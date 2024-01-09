@@ -91,6 +91,7 @@ class OpenCLIPNetwork(BaseImageEncoder):
     def get_relevancy(self, embed: torch.Tensor, positive_id: int) -> torch.Tensor:
         phrases_embeds = torch.cat([self.pos_embeds, self.neg_embeds], dim=0)
         p = phrases_embeds.to(embed.dtype)  # phrases x 512
+        embed = embed.to(p.device)
         output = torch.mm(embed, p.T)  # rays x phrases
         positive_vals = output[..., positive_id : positive_id + 1]  # rays x 1
         negative_vals = output[..., len(self.positives) :]  # rays x N_phrase

@@ -41,9 +41,9 @@ l3gs_method = MethodSpecification(
             ),
             model=LLGaussianSplattingModelConfig(),
             network=OpenCLIPNetworkConfig(
-                    clip_model_type="ViT-B-16", clip_model_pretrained="laion2b_s34b_b88k", clip_n_dims=512
+                    clip_model_type="ViT-B-16", clip_model_pretrained="laion2b_s34b_b88k", clip_n_dims=512, device=1
             ),
-            depthmodel=ZoeDepthNetworkConfig(),
+            depthmodel=ZoeDepthNetworkConfig(device=0),
         ),
         optimizers={
             "xyz": {

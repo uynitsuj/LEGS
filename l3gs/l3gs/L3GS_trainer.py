@@ -48,6 +48,8 @@ from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
 
+import memray
+
 TORCH_DEVICE = str
 TRAIN_ITERATION_OUTPUT = Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]
 
@@ -373,7 +375,7 @@ class Trainer:
         #     return None,None,None
         # return img_out, dep_out, retc
 
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 300):
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 200):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -474,7 +476,7 @@ class Trainer:
                 )
         self.viewer_state.camera_handles[cidx] = camera_handle
         self.viewer_state.original_c2w[cidx] = c2w
-        project_interval = 2
+        project_interval = 3
         if self.done_scale_calc and step % project_interval == 0:
             depth = self.pipeline.monodepth_inference(image_data.cpu().numpy())
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
@@ -609,7 +611,7 @@ class Trainer:
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
             step = 0
-            num_add = 25
+            num_add = 50
             
             while True:
                 rclpy.spin_once(trainer_node,timeout_sec=0.00)
@@ -640,7 +642,7 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<10):
+                elif not self.done_scale_calc and (len(parser_scale_list)<5):
                     time.sleep(0.01)
                     continue
 
@@ -683,6 +685,7 @@ class Trainer:
                         R = R @ vtf.SO3.from_x_radians(np.pi)
                         self.viewer_state.camera_handles[idxs[idx]].position = c2w[:3, 3]
                         self.viewer_state.camera_handles[idxs[idx]].wxyz = R.wxyz
+                    print("************\nDone scale calc\n************")
 
 
 
@@ -706,6 +709,8 @@ class Trainer:
                             )
 
                         # time the forward pass
+                            
+                        # start = time.time()
                         loss, loss_dict, metrics_dict = self.train_iteration(step)
                         
                         # add deprojected gaussians from monocular depth
@@ -716,6 +721,7 @@ class Trainer:
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
 
+                        # print(f"Train + deprojecting took {time.time()-start} seconds")
 
                         # training callbacks after the training iteration
                         for callback in self.callbacks:
@@ -922,7 +928,7 @@ class Trainer:
                 if f != ckpt_path:
                     f.unlink()
 
-    @profiler.time_function
+    @profile
     def train_iteration(self, step: int) -> TRAIN_ITERATION_OUTPUT:
         """Run one iteration with a batch of inputs. Returns dictionary of model losses.
 

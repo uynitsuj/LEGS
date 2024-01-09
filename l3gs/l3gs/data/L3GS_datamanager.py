@@ -169,7 +169,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         self.clip_interpolator = PyramidEmbeddingDataloader(
             image_list=[],
-            device='cuda:0',
+            device='cuda:1',
             cfg={
                 "tile_size_range": list(self.config.patch_tile_size_range),
                 "tile_size_res": self.config.patch_tile_size_res,
@@ -409,7 +409,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         Returns a Camera instead of raybundle"""
         # print(len(self.train_unseen_cameras))
-        print(self.train_unseen_cameras)
+        # print(self.train_unseen_cameras)
         image_idx = self.train_unseen_cameras.pop()
         # print(image_idx)
         # Make sure to re-populate the unseen cameras list if we have exhausted it

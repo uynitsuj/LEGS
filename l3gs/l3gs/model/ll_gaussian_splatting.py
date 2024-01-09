@@ -273,7 +273,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                 deprojected = torch.stack(deprojected, dim=0)
                 colors = torch.stack(colors, dim=0)
                 numpts = len(deprojected)
-                print("Adding {} new points".format(numpts))
+                # print("Adding {} new points".format(numpts))
                 distances, _ = self.k_nearest_sklearn(deprojected, 3)
                 distances = torch.from_numpy(distances)
                 # find the average of the three nearest neighbors for each point and use that as the scale
@@ -667,18 +667,18 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         outputs["rgb"] = rgb
         depth_im = None
         # if not self.training:
-        #     depth_im = RasterizeGaussians.apply(
-        #         self.xys,
-        #         depths,
-        #         self.radii,
-        #         conics,
-        #         num_tiles_hit,
-        #         depths[:, None].repeat(1, 3),
-        #         torch.sigmoid(opacities_crop),
-        #         H,
-        #         W,
-        #         torch.ones(3, device=self.device) * 10,
-        #     )[..., 0:1]
+        depth_im = RasterizeGaussians.apply(
+            self.xys,
+            depths,
+            self.radii,
+            conics,
+            num_tiles_hit,
+            depths[:, None].repeat(1, 3),
+            torch.sigmoid(opacities_crop),
+            H,
+            W,
+            torch.ones(3, device=self.device) * 10,
+        )[..., 0:1]
         # # rescale the camera back to original dimensions
         # camera.rescale_output_resolution(camera_downscale)
 
@@ -745,6 +745,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
 
         return outputs
     
+    @profile
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
 
@@ -771,6 +772,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         metrics_dict["gaussian_count"] = self.num_points
         return metrics_dict
     
+    @profile
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         """Computes and returns the losses dict.
 
@@ -805,7 +807,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         
         if self.training and 'clip' in outputs: 
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
-                outputs["clip"], batch["clip"].to(torch.float32), delta=1.25, reduction="none"
+                outputs["clip"], batch["clip"].to(torch.float32).to(self.device), delta=1.25, reduction="none"
             )
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
 

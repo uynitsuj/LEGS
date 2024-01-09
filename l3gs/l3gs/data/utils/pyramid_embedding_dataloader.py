@@ -103,6 +103,7 @@ class PyramidEmbeddingDataloader(FeatureDataloader, mp.Process):
         )
 
     def _uniform_scales(self, img_points, scale):
+        scale = scale.to(self.device)
         scale_bin = torch.floor(
             (scale - self.tile_sizes[0]) / (self.tile_sizes[-1] - self.tile_sizes[0]) * (self.tile_sizes.shape[0] - 1)
         ).to(torch.int64)
@@ -134,8 +135,10 @@ class PyramidEmbeddingDataloader(FeatureDataloader, mp.Process):
             img_batch = []
             while True:
                 try:
+                    # print(self.in_queue.qsize(), "queue size")
                     img = self.in_queue.get(timeout=.01)  # img is a tuple (image, index)
-                    print("got image")
+                    # print("got image")
+                    
                 except queue.Empty:
                     break
                 if img is None:
@@ -168,5 +171,5 @@ class PyramidEmbeddingDataloader(FeatureDataloader, mp.Process):
         self.in_queue.put(None)
 
     def enqueue_image(self, img):
-        print("enqueue image for pyramid...?")
+        # print("enqueue image for pyramid...?")
         self.in_queue.put(img)
