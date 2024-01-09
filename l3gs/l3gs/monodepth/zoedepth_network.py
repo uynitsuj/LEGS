@@ -12,7 +12,7 @@ import numpy as np
 @dataclass
 class ZoeDepthNetworkConfig(InstantiateConfig):
     _target: Type = field(default_factory=lambda: ZoeDepthNetwork)
-    depth_model: str = 'ZoeD_N' #ZoeD_NK, ZoeD_N, ZoeD_K
+    depth_model: str = 'ZoeD_NK' #ZoeD_NK, ZoeD_N, ZoeD_K
     repo = "isl-org/ZoeDepth"
     device: str = 'cuda'
 

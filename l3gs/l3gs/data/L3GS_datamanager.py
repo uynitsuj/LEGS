@@ -515,6 +515,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # self.train_dataset.add_image(img,cam)
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
 
+    @profile
     def process_image(self, img:torch.tensor, cam: Cameras, clip, dino):
         # ----------------- Handling the IMAGE ----------------
         # raise NotImplementedError
@@ -528,12 +529,13 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
         # self.clip_interpolator.add_images(img.unsqueeze(0))
         # dino = dino.to(self.device)
-        for i, tr in enumerate(self.clip_interpolator.tile_sizes):
-            clip[i] = clip[i].to(self.device)
-            if self.clip_interpolator.data_dict[i].data is not None:
-                self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
-            else:
-                self.clip_interpolator.data_dict[i].data = clip[i]
+        if clip is not None: 
+            for i, tr in enumerate(self.clip_interpolator.tile_sizes):
+                clip[i] = clip[i].to(self.device)
+                if self.clip_interpolator.data_dict[i].data is not None:
+                    self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
+                else:
+                    self.clip_interpolator.data_dict[i].data = clip[i]
         # if self.dino_dataloader.data is None:
         #     self.dino_dataloader.data = dino
         # else:

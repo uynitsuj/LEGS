@@ -21,7 +21,7 @@ class OpenCLIPNetworkConfig(BaseImageEncoderConfig):
     clip_model_pretrained: str = "laion2b_s34b_b88k"
     clip_n_dims: int = 512
     negatives: Tuple[str] = ("object", "things", "stuff", "texture")
-    device: str = 'cuda'
+    device: str = 'cuda:0'
 
     @property
     def name(self) -> str:
@@ -45,6 +45,7 @@ class OpenCLIPNetwork(BaseImageEncoder):
             self.config.clip_model_type,  # e.g., ViT-B-16
             pretrained=self.config.clip_model_pretrained,  # e.g., laion2b_s34b_b88k
             precision="fp16",
+            device=self.config.device,
         )
         model.eval()
         self.tokenizer = open_clip.get_tokenizer(self.config.clip_model_type)
@@ -79,6 +80,7 @@ class OpenCLIPNetwork(BaseImageEncoder):
         return self.config.clip_n_dims
     
     def gui_cb(self,element):
+        # element = element.to(self.config.device)
         self.set_positives(element.value.split(";"))
 
     def set_positives(self, text_list):
@@ -87,6 +89,7 @@ class OpenCLIPNetwork(BaseImageEncoder):
             tok_phrases = torch.cat([self.tokenizer(phrase) for phrase in self.positives]).to(self.config.device)
             self.pos_embeds = self.model.encode_text(tok_phrases)
         self.pos_embeds /= self.pos_embeds.norm(dim=-1, keepdim=True)
+        self.pos_embeds = self.pos_embeds.to(self.config.device)
 
     def get_relevancy(self, embed: torch.Tensor, positive_id: int) -> torch.Tensor:
         phrases_embeds = torch.cat([self.pos_embeds, self.neg_embeds], dim=0)

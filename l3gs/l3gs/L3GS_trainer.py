@@ -375,6 +375,7 @@ class Trainer:
         #     return None,None,None
         # return img_out, dep_out, retc
 
+    @profile
     def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 200):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
@@ -432,6 +433,7 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
+    @profile
     def process_image(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
@@ -594,6 +596,8 @@ class Trainer:
         #     }
         return Optimizers(optimizer_config, param_groups)
 
+
+    @profile
     def train(self) -> None:
         print("IM IN")
         """Train the model."""
@@ -636,7 +640,10 @@ class Trainer:
                 
                 while len(self.image_process_queue) > 0:
                 # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
+                    start = time.time()
                     self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
+                    # self.process_image(self.image_process_queue.pop(0), step)
+                    print("process image took " + str((time.time()-start)) + " s")
 
                 if self.training_state == "paused":
                     time.sleep(0.01)
@@ -678,7 +685,7 @@ class Trainer:
                         c2w = C.camera_to_worlds[idx,...]
                         row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=c2w.device)
                         c2w= torch.matmul(torch.cat([H,row]),torch.cat([c2w,row]))[:3,:]
-                        c2w[:3,3] *= scale
+                        c2w[:3,3] *= scale #* VISER_NERFSTUDIO_SCALE_RATIO
                         C.camera_to_worlds[idx,...] = c2w
 
                         R = vtf.SO3.from_matrix(c2w[:3, :3])
@@ -928,7 +935,7 @@ class Trainer:
                 if f != ckpt_path:
                     f.unlink()
 
-    @profile
+    # @profile
     def train_iteration(self, step: int) -> TRAIN_ITERATION_OUTPUT:
         """Run one iteration with a batch of inputs. Returns dictionary of model losses.
 

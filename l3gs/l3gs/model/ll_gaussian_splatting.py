@@ -745,7 +745,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
 
         return outputs
     
-    @profile
+    # @profile
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
 
@@ -766,13 +766,13 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         gt_rgb = gt_img.to(self.device)  # RGB or RGBA image
         predicted_rgb = outputs["rgb"]
         assert predicted_rgb.shape == gt_rgb.shape
-        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
         metrics_dict["gaussian_count"] = self.num_points
         return metrics_dict
     
-    @profile
+    # @profile
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         """Computes and returns the losses dict.
 
@@ -790,7 +790,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         #     gt_img = batch["image"]
         gt_img = batch["image"]
         Ll1 = torch.abs(gt_img - outputs["rgb"]).mean()
-        simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], outputs["rgb"].permute(2, 0, 1)[None, ...])
+        # simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], outputs["rgb"].permute(2, 0, 1)[None, ...])
         if self.step % 10 == 0:
             # Before, we made split sh and colors onto different optimizer, with shs having a low learning rate
             # This is slow, instead we apply a regularization every few steps
@@ -801,7 +801,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         else:
             sh_reg = torch.tensor(0.0).to(self.device)
             scale_reg = torch.tensor(0.0).to(self.device)
-        loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss
+        loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 #+ self.config.ssim_lambda * simloss
         loss_dict["sh_reg"] = sh_reg
         loss_dict['scale_reg'] = scale_reg
         
