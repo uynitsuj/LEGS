@@ -480,7 +480,7 @@ class Trainer:
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 3
         if self.done_scale_calc and step % project_interval == 0:
-            depth = self.pipeline.monodepth_inference(image_data.cpu().numpy())
+            depth = self.pipeline.monodepth_inference(image_data.numpy())
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
             self.deprojected_queue.extend(deprojected)
             self.colors_queue.extend(colors)
@@ -717,7 +717,7 @@ class Trainer:
 
                         # time the forward pass
                             
-                        # start = time.time()
+                        start = time.time()
                         loss, loss_dict, metrics_dict = self.train_iteration(step)
                         
                         # add deprojected gaussians from monocular depth
@@ -728,7 +728,7 @@ class Trainer:
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
 
-                        # print(f"Train + deprojecting took {time.time()-start} seconds")
+                        print(f"Train + deprojecting took {time.time()-start} seconds")
 
                         # training callbacks after the training iteration
                         for callback in self.callbacks:
