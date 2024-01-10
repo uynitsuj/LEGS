@@ -745,7 +745,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
 
         return outputs
     
-    # @profile
+    @profile
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
 
@@ -772,7 +772,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         metrics_dict["gaussian_count"] = self.num_points
         return metrics_dict
     
-    # @profile
+    @profile
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         """Computes and returns the losses dict.
 

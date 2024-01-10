@@ -935,7 +935,7 @@ class Trainer:
                 if f != ckpt_path:
                     f.unlink()
 
-    # @profile
+    @profile
     def train_iteration(self, step: int) -> TRAIN_ITERATION_OUTPUT:
         """Run one iteration with a batch of inputs. Returns dictionary of model losses.
 
