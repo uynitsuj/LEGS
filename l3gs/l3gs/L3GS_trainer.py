@@ -375,7 +375,7 @@ class Trainer:
         #     return None,None,None
         # return img_out, dep_out, retc
 
-    @profile
+    # @profile
     def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 200):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
@@ -433,7 +433,7 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    @profile
+    # @profile
     def process_image(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
@@ -948,12 +948,12 @@ class Trainer:
         ]
         self.optimizers.zero_grad_some(needs_zero)
         cpu_or_cuda_str: str = self.device.split(":")[0]
-        # start = time.time()
+        start = time.time()
         with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
             _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
-            # end = time.time()
-            # elapsed = str((end-start)*1e3)
-            # print("get_train_loss time: "+ elapsed + "(ms)")
+            end = time.time()
+            elapsed = str((end-start)*1e3)
+            print("get_train_loss time: "+ elapsed + "(ms)")
             loss = functools.reduce(torch.add, loss_dict.values())
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [

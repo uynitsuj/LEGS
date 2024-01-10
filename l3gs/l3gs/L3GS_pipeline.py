@@ -195,7 +195,7 @@ class L3GSPipeline(VanillaPipeline):
         self.img_count += 1
 
     # this actually adds the image to the datamanager + dataset...?
-    @profile
+    # @profile
     def process_image(
         self,
         img: torch.Tensor, 

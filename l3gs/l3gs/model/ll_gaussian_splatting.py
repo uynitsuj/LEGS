@@ -106,7 +106,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """Gaussian Splatting Model Config"""
 
     _target: Type = field(default_factory=lambda: LLGaussianSplattingModel)
-    warmup_length: int = 500
+    warmup_length: int = 5000
     """period of steps where refinement is turned off"""
     refine_every: int = 100
     """period of steps where gaussians are culled and densified"""

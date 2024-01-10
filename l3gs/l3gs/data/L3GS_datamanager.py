@@ -404,6 +404,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # TODO: fix this to be the resolution of the last image rendered
         return 800 * 800
 
+    @profile
     def next_train(self, step: int) -> Tuple[Cameras, Dict]:
         """Returns the next training batch
 
@@ -436,24 +437,25 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         ########
 
         #Pick a random scale from min to max and then the clip features at that scale
-        H, W = data["image"].shape[:2]
-        scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
-        # scale = torch.tensor(0.1).to(self.device)
-        self.curr_scale = scale
-        scaled_height = H//self.config.clip_downscale_factor
-        scaled_width = W//self.config.clip_downscale_factor
-        self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
+        if step > 5000:
+            H, W = data["image"].shape[:2]
+            scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
+            # scale = torch.tensor(0.1).to(self.device)
+            self.curr_scale = scale
+            scaled_height = H//self.config.clip_downscale_factor
+            scaled_width = W//self.config.clip_downscale_factor
+            self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
 
-        x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
-        y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
-        image_idx_tensor = torch.ones(scaled_height, scaled_width, 1)*image_idx
-        positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
-        positions = positions[self.random_pixels]
-        with torch.no_grad():
-            data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)[0], self.clip_interpolator(positions, scale)[1]
-            # data["dino"] = self.dino_dataloader(positions)
-        
-        camera.metadata["clip_downscale_factor"] = self.config.clip_downscale_factor
+            x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
+            y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
+            image_idx_tensor = torch.ones(scaled_height, scaled_width, 1)*image_idx
+            positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
+            positions = positions[self.random_pixels]
+            with torch.no_grad():
+                data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)[0], self.clip_interpolator(positions, scale)[1]
+                # data["dino"] = self.dino_dataloader(positions)
+            
+            camera.metadata["clip_downscale_factor"] = self.config.clip_downscale_factor
         
         return camera, data
 
@@ -515,7 +517,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # self.train_dataset.add_image(img,cam)
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
 
-    @profile
+    # @profile
     def process_image(self, img:torch.tensor, cam: Cameras, clip, dino):
         # ----------------- Handling the IMAGE ----------------
         # raise NotImplementedError
