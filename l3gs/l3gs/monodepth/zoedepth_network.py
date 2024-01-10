@@ -14,7 +14,7 @@ class ZoeDepthNetworkConfig(InstantiateConfig):
     _target: Type = field(default_factory=lambda: ZoeDepthNetwork)
     depth_model: str = 'ZoeD_NK' #ZoeD_NK, ZoeD_N, ZoeD_K
     repo = "isl-org/ZoeDepth"
-    device: str = 'cuda'
+    device: str = 'cuda:0'
 
 
 class ZoeDepthNetwork():
@@ -30,6 +30,7 @@ class ZoeDepthNetwork():
     def name(self) -> str:
         return "depth_{}".format(self.config.depth_model)
 
+    @profile
     def get_depth(self, image):
         if type(image) == Image or type(image) == np.ndarray:
             image = transforms.ToTensor()(image).to(self.config.device).unsqueeze(0)
@@ -39,6 +40,3 @@ class ZoeDepthNetwork():
             raise Exception("Image type not supported")
         depth = self.model.to(self.config.device).infer(image)
         return depth
-
-
-    

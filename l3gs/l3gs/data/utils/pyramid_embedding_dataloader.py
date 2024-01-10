@@ -160,7 +160,7 @@ class PyramidEmbeddingDataloader(FeatureDataloader, mp.Process):
             for _ in img_batch:
                 updates = []
                 for i, tr in enumerate(self.tile_sizes):
-                    updates.append(self.data_dict[i].data[j:j+1,...])
+                    updates.append(self.data_dict[i].data[j:j+1,...].cpu())
 
                 self.out_queue.put(updates)
                 j+=1

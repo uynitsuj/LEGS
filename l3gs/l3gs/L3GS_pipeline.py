@@ -212,15 +212,4 @@ class L3GSPipeline(VanillaPipeline):
 
     def monodepth_inference(self, image):
         depth = self.depthmodel.get_depth(image)
-        # plt.figure()
-        # plt.subplot(211)
-        # plt.imshow(image)
-
-        # plt.subplot(212)
-        # plt.imshow(depth.cpu().detach().numpy()[0,0,:,:], cmap='magma')
-        # plt.show()
-        # print(depth)
         return depth
-    
-    # def add_deprojected_means(self, deprojected, colors, optimizers):
-    #     self.model.add_deprojected_means(deprojected, colors, optimizers)

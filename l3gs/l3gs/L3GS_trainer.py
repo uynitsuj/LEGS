@@ -433,11 +433,12 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    # @profile
+    @profile
     def process_image(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
         '''
+        start = time.time()
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
         image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
@@ -480,10 +481,12 @@ class Trainer:
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 3
         if self.done_scale_calc and step % project_interval == 0:
-            depth = self.pipeline.monodepth_inference(image_data.numpy())
+            # depth = self.pipeline.monodepth_inference(image_data.numpy())
+            depth = torch.rand((1,1,480,640))
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
             self.deprojected_queue.extend(deprojected)
             self.colors_queue.extend(colors)
+        print("Time inside process image:", time.time() - start)
             # import pdb; pdb.set_trace()
 
 
@@ -577,7 +580,7 @@ class Trainer:
             self.config.logging, max_iter=self.config.max_num_iterations, banner_messages=banner_messages
         )
         writer.put_config(name="config", config_dict=dataclasses.asdict(self.config), step=0)
-        profiler.setup_profiler(self.config.logging, writer_log_path)
+        # profiler.setup_profiler(self.config.logging, writer_log_path)
 
     def setup_optimizers(self) -> Optimizers:
         """Helper to set up the optimizers
@@ -595,7 +598,6 @@ class Trainer:
         #         "scheduler": None,
         #     }
         return Optimizers(optimizer_config, param_groups)
-
 
     @profile
     def train(self) -> None:
@@ -637,19 +639,23 @@ class Trainer:
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
 
-                
+                # random_list = []
                 while len(self.image_process_queue) > 0:
                 # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
                     start = time.time()
                     self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
+                    # import pdb; pdb.set_trace()
+                    
+                    # random_list.append(eself.clip_out_queue.get())
                     # self.process_image(self.image_process_queue.pop(0), step)
-                    print("process image took " + str((time.time()-start)) + " s")
+                    print("clip_out_queue get took " + str((time.time()-start)) + " s")
 
                 if self.training_state == "paused":
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
                 elif not self.done_scale_calc and (len(parser_scale_list)<5):
+                    # print("Scale Calc Not Done")
                     time.sleep(0.01)
                     continue
 
