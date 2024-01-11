@@ -481,8 +481,8 @@ class Trainer:
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 3
         if self.done_scale_calc and step % project_interval == 0:
-            # depth = self.pipeline.monodepth_inference(image_data.numpy())
-            depth = torch.rand((1,1,480,640))
+            depth = self.pipeline.monodepth_inference(image_data.numpy())
+            # depth = torch.rand((1,1,480,640))
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
             self.deprojected_queue.extend(deprojected)
             self.colors_queue.extend(colors)
@@ -643,12 +643,15 @@ class Trainer:
                 while len(self.image_process_queue) > 0:
                 # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
                     start = time.time()
-                    self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
+                    if self.clip_out_queue.empty():
+                        self.process_image(self.image_process_queue.pop(0), step)
+                    else:
+                        self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
+                        print("clip_out_queue get took " + str((time.time()-start)) + " s")
                     # import pdb; pdb.set_trace()
                     
                     # random_list.append(eself.clip_out_queue.get())
                     # self.process_image(self.image_process_queue.pop(0), step)
-                    print("clip_out_queue get took " + str((time.time()-start)) + " s")
 
                 if self.training_state == "paused":
                     time.sleep(0.01)

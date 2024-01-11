@@ -54,6 +54,7 @@ from nerfstudio.model_components.losses import depth_ranking_loss
 from gsplat.sh import SphericalHarmonics, num_sh_bases
 from pytorch_msssim import  SSIM
 from nerfstudio.utils.colormaps import apply_colormap
+from nerfstudio.utils.rich_utils import CONSOLE
 
 def random_quat_tensor(N):
     """
@@ -140,7 +141,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """weight of ssim loss"""
     stop_split_at: int = 15000
     """stop splitting at this step"""
-    sh_degree: int = 4
+    sh_degree: int = 3
     """maximum degree of spherical harmonics to use"""
     clip_loss_weight: float = 0.1
     """weight of clip loss"""
@@ -189,15 +190,26 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         self.image_encoder: BaseImageEncoder = self.kwargs["image_encoder"]
 
         if self.seed_pts is not None and not self.config.random_init:
-            fused_color = RGB2SH(self.seed_pts[1] / 255)
-            shs = torch.zeros((fused_color.shape[0], dim_sh, 3)).float().cuda()
-            shs[:, 0, :3] = fused_color
-            shs[:, 1:, 3:] = 0.0
-            self.colors_all = torch.nn.Parameter(shs)
+            # fused_color = RGB2SH(self.seed_pts[1] / 255)
+            # shs = torch.zeros((fused_color.shape[0], dim_sh, 3)).float().cuda()
+            # shs[:, 0, :3] = fused_color
+            # shs[:, 1:, 3:] = 0.0
+            # self.colors_all = torch.nn.Parameter(shs)
+            shs = torch.zeros((self.seed_pts[1].shape[0], dim_sh, 3)).float().cuda()
+            if self.config.sh_degree > 0:
+                shs[:, 0, :3] = RGB2SH(self.seed_pts[1] / 255)
+                shs[:, 1:, 3:] = 0.0
+            else:
+                CONSOLE.log("use color only optimization with sigmoid activation")
+                shs[:, 0, :3] = torch.logit(self.seed_pts[1] / 255, eps=1e-10)
+            self.features_dc = torch.nn.Parameter(shs[:, 0, :])
+            self.features_rest = torch.nn.Parameter(shs[:, 1:, :])
         else:
-            colors = torch.nn.Parameter(torch.rand(self.num_points, 1, 3))
-            shs_rest = torch.nn.Parameter(torch.zeros((self.num_points, dim_sh - 1, 3)))
-            self.colors_all = torch.nn.Parameter(torch.cat([colors, shs_rest], dim=1))
+            # colors = torch.nn.Parameter(torch.rand(self.num_points, 1, 3))
+            # shs_rest = torch.nn.Parameter(torch.zeros((self.num_points, dim_sh - 1, 3)))
+            # self.colors_all = torch.nn.Parameter(torch.cat([colors, shs_rest], dim=1))
+            self.features_dc = torch.nn.Parameter(torch.rand(self.num_points, 3))
+            self.features_rest = torch.nn.Parameter(torch.zeros((self.num_points, dim_sh - 1, 3)))
 
         self.opacities = torch.nn.Parameter(torch.logit(0.01 * torch.ones(self.num_points, 1)))
 
@@ -226,6 +238,38 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
             num_cameras=self.num_train_data, device="cpu"
         )
+
+    @property
+    def colors(self):
+        return self.colors_all[:, 0, :]
+        if self.config.sh_degree > 0:
+            return SH2RGB(self.features_dc)
+        else:
+            return torch.sigmoid(self.features_dc)
+
+    @property
+    def shs_0(self):
+        return self.features_dc
+
+    @property
+    def shs_rest(self):
+        return self.colors_all[:, 1:, :]
+        return self.features_rest
+
+    def load_state_dict(self, dict, **kwargs):  # type: ignore
+        # resize the parameters to match the new number of points
+        self.step = 30000
+        newp = dict["means"].shape[0]
+        self.means = torch.nn.Parameter(torch.zeros(newp, 3, device=self.device))
+        self.scales = torch.nn.Parameter(torch.zeros(newp, 3, device=self.device))
+        self.quats = torch.nn.Parameter(torch.zeros(newp, 4, device=self.device))
+        self.opacities = torch.nn.Parameter(torch.zeros(newp, 1, device=self.device))
+        self.features_dc = torch.nn.Parameter(torch.zeros(newp, 3, device=self.device))
+        self.features_rest = torch.nn.Parameter(
+            torch.zeros(newp, num_sh_bases(self.config.sh_degree) - 1, 3, device=self.device)
+        )
+        super().load_state_dict(dict, **kwargs)
+
     
     def add_new_params_to_optimizer(self, optimizer, new_param_groups):
         """
