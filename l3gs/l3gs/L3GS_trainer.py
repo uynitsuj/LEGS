@@ -343,28 +343,28 @@ class Trainer:
         if decode_only, don't add the image to the clip/dino queue using `add_image`.
         '''
         # image: Image = msg.img
-        camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+        # camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # # CONSOLE.print("Adding image to dataset")
         # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
         image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
         # # By default the D4 VPU provides 16bit depth with a depth unit of 1000um (1mm).
         # # --> depth_data is in meters.
         # depth_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
-        fx = torch.tensor([msg.fl_x])
-        fy = torch.tensor([msg.fl_y])
-        cy = torch.tensor([msg.cy])
-        cx = torch.tensor([msg.cx])
-        width = torch.tensor([msg.w])
-        height = torch.tensor([msg.h])
-        distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        camera_type = CameraType.PERSPECTIVE
-        c = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
-        retc = deepcopy(c)
+        # fx = torch.tensor([msg.fl_x])
+        # fy = torch.tensor([msg.fl_y])
+        # cy = torch.tensor([msg.cy])
+        # cx = torch.tensor([msg.cx])
+        # width = torch.tensor([msg.w])
+        # height = torch.tensor([msg.h])
+        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
+        # camera_type = CameraType.PERSPECTIVE
+        # c = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+        # retc = deepcopy(c)
         # img_out=image_data.clone()
         # dep_out=depth_data.clone()
         if not decode_only:
             # with self.train_lock:
-            self.pipeline.add_image(img = image_data, pose = c)
+            self.pipeline.add_image(img = image_data)
         # dep_out *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
         # #TODO add the dataparser transform here
         # H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
@@ -404,7 +404,6 @@ class Trainer:
 
         ### simple uniform sampling approach
         num_points = flat_depth.shape[0]
-        # num_samples = 300
         sampled_indices = torch.randint(0, num_points, (num_samples,))
 
         sampled_depth = flat_depth[sampled_indices] * scale
@@ -416,19 +415,12 @@ class Trainer:
         X_camera = (sampled_grid_x - width/2) * sampled_depth / fx
         Y_camera = -(sampled_grid_y - height/2) * sampled_depth / fy
 
-        
         ones = torch.ones_like(sampled_depth)
         P_camera = torch.stack([X_camera, Y_camera, -sampled_depth, ones], dim=1)
         
         homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device=self.device)
         camera_to_world_homogenized = torch.cat((c2w, homogenizing_row), dim=0)
 
-        # R = camera_to_world_homogenized[:3, :3]
-        # t = camera_to_world_homogenized[:3, 3]
-        # t_new = H[:3, 3].to(self.device)
-        # t_scale = (t-t_new)
-
-        # camera_to_world_homogenized[:3, 3] = t_scale
         P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
         
         return P_world[:, :3], sampled_image
@@ -471,7 +463,7 @@ class Trainer:
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale=0.5,
+                    scale=1,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
@@ -640,14 +632,14 @@ class Trainer:
                         parser_scale_list.append(msg.pose)
 
                 # random_list = []
-                while len(self.image_process_queue) > 0:
-                # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
-                    start = time.time()
-                    if self.clip_out_queue.empty():
-                        self.process_image(self.image_process_queue.pop(0), step)
-                    else:
-                        self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
-                        print("clip_out_queue get took " + str((time.time()-start)) + " s")
+                # while len(self.image_process_queue) > 0:
+                # # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
+                #     start = time.time()
+                #     if self.clip_out_queue.empty():
+                #         self.process_image(self.image_process_queue.pop(0), step)
+                #     else:
+                #         self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
+                #         print("clip_out_queue get took " + str((time.time()-start)) + " s")
                     # import pdb; pdb.set_trace()
                     
                     # random_list.append(eself.clip_out_queue.get())
@@ -702,6 +694,9 @@ class Trainer:
                         self.viewer_state.camera_handles[idxs[idx]].position = c2w[:3, 3]
                         self.viewer_state.camera_handles[idxs[idx]].wxyz = R.wxyz
                     print("************\nDone scale calc\n************")
+                
+                while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
+                    self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())
 
 
 

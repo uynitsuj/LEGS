@@ -181,6 +181,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
             # network=self.network,
         )
         self.clip_interpolator.start()
+        self.clip_interpolator.device='cuda:0' #??
         self.clip_interpolator.create(None, self.network.setup())
 
         self.curr_scale = None
@@ -498,7 +499,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         raise NotImplementedError
 
 
-    def add_image(self, img:torch.tensor, cam: Cameras):
+    def add_image(self, img: torch.tensor, cam: Cameras = None):
         """
         Adds a new image to the datamanager
         1. add the actual image data

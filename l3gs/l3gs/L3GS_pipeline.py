@@ -2,12 +2,12 @@ import typing
 from dataclasses import dataclass, field
 from typing import Literal, Type, Optional
 
-# import torch.distributed as dist
+import torch.distributed as dist
 from torch.cuda.amp.grad_scaler import GradScaler
-# from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 # from nerfstudio.configs import base_config as cfg
-from nerfstudio.models.base_model import ModelConfig
+from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils.math import intersect_aabb, intersect_obb
 from nerfstudio.pipelines.base_pipeline import (
     VanillaPipeline,
@@ -108,7 +108,7 @@ class L3GSPipeline(VanillaPipeline):
         highres_downscale : float = 4.0,
         use_clip : bool = False,
         model_name : str = "dino_vits8",
-        dino_thres : float = 0.4, 
+        # dino_thres : float = 0.4, 
         clip_out_queue : Optional[mp.Queue] = None,
         # dino_out_queue : Optional[mp.Queue] = None,
         use_depth = True, 
@@ -146,10 +146,10 @@ class L3GSPipeline(VanillaPipeline):
 
         self.depthmodel = config.depthmodel.setup()
 
-        # self.world_size = world_size
-        # if world_size > 1:
-        #     self._model = typing.cast(LERFModel, DDP(self._model, device_ids=[local_rank], find_unused_parameters=True))
-        #     dist.barrier(device_ids=[local_rank])
+        self.world_size = world_size
+        if world_size > 1:
+            self._model = typing.cast(Model, DDP(self._model, device_ids=[local_rank], find_unused_parameters=True))
+            dist.barrier(device_ids=[local_rank])
 
         # self.highres_downscale = highres_downscale
         
@@ -177,7 +177,7 @@ class L3GSPipeline(VanillaPipeline):
     def add_image(
         self,
         img: torch.Tensor, 
-        pose: Cameras, 
+        pose: Cameras = None, 
     ):
         # if self.diff_checkbox.value:
         #     heat_map = self.query_diff(img, pose)
@@ -190,8 +190,8 @@ class L3GSPipeline(VanillaPipeline):
         #     boxes = self.heatmaps2box([heat_map], [pose], [lerf_output["depth"]])
         #     print(boxes)
             # self.mask_volume(boxes) #This will deal with the masks in the datamanager
-        print("Adding image to DM",pose.camera_to_worlds[:3,3].flatten())
-        self.datamanager.add_image(img, pose)
+        # self.datamanager.add_image(img, pose)
+        self.datamanager.add_image(img)
         self.img_count += 1
 
     # this actually adds the image to the datamanager + dataset...?
@@ -203,6 +203,7 @@ class L3GSPipeline(VanillaPipeline):
         clip: dict,
         dino,
     ):
+        print("Adding image to train dataset",pose.camera_to_worlds[:3,3].flatten())
         
         self.datamanager.process_image(img, pose, clip, dino)
         # self.datamanager.train_pixel_sampler.nonzero_indices = torch.nonzero(self.datamanager.train_dataset.mask_tensor[0:len(self.datamanager.train_dataset), ..., 0].to(self.device), as_tuple=False)
