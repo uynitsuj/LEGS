@@ -217,10 +217,11 @@ class L3GSPipeline(VanillaPipeline):
         # Down-sample
         # down_height = image.shape[0] // 2
         # down_width = image.shape[1] // 2
-        # downsampled_img = cv2.resize(np.array(image), (down_width, down_height), interpolation=cv2.INTER_AREA)
-
+        # imagedown = cv2.resize(np.array(image), (down_width, down_height), interpolation=cv2.INTER_AREA)
+        
         depth = self.depthmodel.get_depth(image)
 
+        # import pdb; pdb.set_trace()
         # Up-resolution
         # depth = cv2.resize(np.array(depth), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
         # depth = F.interpolate(depth, size=(image.shape[0], image.shape[1]), mode='bilinear', align_corners=False)

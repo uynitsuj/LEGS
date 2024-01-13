@@ -48,7 +48,6 @@ from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
 
-import memray
 
 TORCH_DEVICE = str
 TRAIN_ITERATION_OUTPUT = Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]
@@ -376,16 +375,16 @@ class Trainer:
         # return img_out, dep_out, retc
 
     # @profile
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 200):
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 100):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
         scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
         # import pdb; pdb.set_trace()
         H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
-        c2w = camera.camera_to_worlds.to(self.device)
-        depth_image = depth_image.to(self.device)
-        image = image.to(self.device)
+        c2w = camera.camera_to_worlds.cpu()
+        depth_image = depth_image.cpu()
+        image = image.cpu()
         fx = camera.fx.item()
         fy = camera.fy.item()
         # cx = camera.cx.item()
@@ -393,7 +392,7 @@ class Trainer:
 
         _, _, height, width = depth_image.shape
 
-        grid_x, grid_y = torch.meshgrid(torch.arange(width, device=self.device), torch.arange(height, device=self.device), indexing='ij')
+        grid_x, grid_y = torch.meshgrid(torch.arange(width, device='cpu'), torch.arange(height, device='cpu'), indexing='ij')
         grid_x = grid_x.transpose(0,1).float()
         grid_y = grid_y.transpose(0,1).float()
 
@@ -418,14 +417,14 @@ class Trainer:
         ones = torch.ones_like(sampled_depth)
         P_camera = torch.stack([X_camera, Y_camera, -sampled_depth, ones], dim=1)
         
-        homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device=self.device)
+        homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device='cpu')
         camera_to_world_homogenized = torch.cat((c2w, homogenizing_row), dim=0)
 
         P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
         
         return P_world[:, :3], sampled_image
     
-    @profile
+    # @profile
     def process_image(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
@@ -591,7 +590,7 @@ class Trainer:
         #     }
         return Optimizers(optimizer_config, param_groups)
 
-    @profile
+    # @profile
     def train(self) -> None:
         print("IM IN")
         """Train the model."""
@@ -943,7 +942,7 @@ class Trainer:
                 if f != ckpt_path:
                     f.unlink()
 
-    @profile
+    # @profile
     def train_iteration(self, step: int) -> TRAIN_ITERATION_OUTPUT:
         """Run one iteration with a batch of inputs. Returns dictionary of model losses.
 

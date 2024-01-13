@@ -314,8 +314,8 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                 # import pdb; pdb.set_trace()
                 # deprojected = torch.cat([x.float() for x in deprojected], dim=1)
                 # colors = torch.cat([x.float() for x in colors], dim=1)
-                deprojected = torch.stack(deprojected, dim=0)
-                colors = torch.stack(colors, dim=0)
+                deprojected = torch.stack(deprojected, dim=0).to(self.device)
+                colors = torch.stack(colors, dim=0).to(self.device)
                 numpts = len(deprojected)
                 # print("Adding {} new points".format(numpts))
                 distances, _ = self.k_nearest_sklearn(deprojected, 3)
@@ -357,6 +357,11 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     # import pdb; pdb.set_trace()
                     new_param = [param[0][-num_new_points:]]
                     self.add_new_params_to_optimizer(optimizers.optimizers[group], new_param)
+            colors = colors.detach()
+            deprojected = deprojected.detach()
+            del colors
+            del deprojected
+            torch.cuda.empty_cache()
             self.deprojected_new.clear()
             self.colors_new.clear()
             self.steps_since_add = 0
@@ -789,7 +794,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
 
         return outputs
     
-    @profile
+    # @profile
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
 
@@ -816,7 +821,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         metrics_dict["gaussian_count"] = self.num_points
         return metrics_dict
     
-    @profile
+    # @profile
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         """Computes and returns the losses dict.
 

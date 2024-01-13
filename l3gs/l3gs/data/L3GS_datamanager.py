@@ -169,7 +169,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         self.clip_interpolator = PyramidEmbeddingDataloader(
             image_list=[],
-            device='cuda:1',
+            device='cuda:0',
             cfg={
                 "tile_size_range": list(self.config.patch_tile_size_range),
                 "tile_size_res": self.config.patch_tile_size_res,
@@ -181,7 +181,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
             # network=self.network,
         )
         self.clip_interpolator.start()
-        self.clip_interpolator.device='cuda:0' #??
+        self.clip_interpolator.device = 'cuda:0' #??
         self.clip_interpolator.create(None, self.network.setup())
 
         self.curr_scale = None
@@ -405,7 +405,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # TODO: fix this to be the resolution of the last image rendered
         return 800 * 800
 
-    @profile
+    # @profile
     def next_train(self, step: int) -> Tuple[Cameras, Dict]:
         """Returns the next training batch
 
