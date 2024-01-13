@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Tuple, Type
-
+from guppy import hpy
 import torch
 from torchvision import transforms, datasets
 from nerfstudio.configs.base_config import InstantiateConfig
@@ -39,4 +39,7 @@ class ZoeDepthNetwork():
         else:
             raise Exception("Image type not supported")
         depth = self.model.to(self.config.device).infer(image)
+
+        h = hpy()
+        print(h.heap())
         return depth

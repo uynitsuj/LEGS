@@ -472,7 +472,7 @@ class Trainer:
         self.viewer_state.camera_handles[cidx] = camera_handle
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 3
-        if self.done_scale_calc and step % project_interval == 0:
+        if self.done_scale_calc and idx % project_interval == 0:
             depth = self.pipeline.monodepth_inference(image_data.numpy())
             # depth = torch.rand((1,1,480,640))
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
@@ -609,7 +609,7 @@ class Trainer:
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
             step = 0
-            num_add = 50
+            num_add = 25
             
             while True:
                 rclpy.spin_once(trainer_node,timeout_sec=0.00)
@@ -644,13 +644,16 @@ class Trainer:
                     
                     # random_list.append(eself.clip_out_queue.get())
                     # self.process_image(self.image_process_queue.pop(0), step)
+                        
+                while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
+                    self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())
+
 
                 if self.training_state == "paused":
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
                 elif not self.done_scale_calc and (len(parser_scale_list)<5):
-                    # print("Scale Calc Not Done")
                     time.sleep(0.01)
                     continue
 
@@ -695,10 +698,9 @@ class Trainer:
                         self.viewer_state.camera_handles[idxs[idx]].wxyz = R.wxyz
                     print("************\nDone scale calc\n************")
                 
-                while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
-                    self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())
-
-
+                if len(self.pipeline.datamanager.train_dataset) <= 1:
+                    time.sleep(0.01)
+                    continue
 
                 # Check if we have an image to process, and add *all of them* to the dataset per iteration.
 
@@ -731,6 +733,8 @@ class Trainer:
                         if all(expain):
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
+                        
+                        print(len(self.deprojected_queue))
 
                         print(f"Train + deprojecting took {time.time()-start} seconds")
 
