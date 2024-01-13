@@ -716,61 +716,63 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         outputs["rgb"] = rgb
         depth_im = None
         # if not self.training:
-        depth_im = RasterizeGaussians.apply(
-            self.xys,
-            depths,
-            self.radii,
-            conics,
-            num_tiles_hit,
-            depths[:, None].repeat(1, 3),
-            torch.sigmoid(opacities_crop),
-            H,
-            W,
-            torch.ones(3, device=self.device) * 10,
-        )[..., 0:1]
-        # # rescale the camera back to original dimensions
-        # camera.rescale_output_resolution(camera_downscale)
 
-        outputs["depth"] = depth_im
+        if self.step > 30000:
+            depth_im = RasterizeGaussians.apply(
+                self.xys,
+                depths,
+                self.radii,
+                conics,
+                num_tiles_hit,
+                depths[:, None].repeat(1, 3),
+                torch.sigmoid(opacities_crop),
+                H,
+                W,
+                torch.ones(3, device=self.device) * 10,
+            )[..., 0:1]
+            # # rescale the camera back to original dimensions
+            # camera.rescale_output_resolution(camera_downscale)
+
+            outputs["depth"] = depth_im
 
         ########################
         # CLIP Relevancy Field #
         ########################
-        reset_interval = self.config.reset_alpha_every * self.config.refine_every
-        if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
-            with torch.no_grad():
-                clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
-            # clip_H = H//camera.metadata["clip_downscale_factor"]
-            # clip_W = W//camera.metadata["clip_downscale_factor"]
-            #Very messy will fix to get it from camera metadata
-            self.random_pixels = self.datamanager.random_pixels.to(self.device)
-            clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
-            clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
-            # print("Current scale: ", self.datamanager.curr_scale, "Clip scale mean: ", clip_scale.mean(), "Clip scale max: ", clip_scale.max(), "Clip scale min: ", clip_scale.min())
-            # import pdb; pdb.set_trace()
-            clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+            reset_interval = self.config.reset_alpha_every * self.config.refine_every
+            if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
+                with torch.no_grad():
+                    clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
+                # clip_H = H//camera.metadata["clip_downscale_factor"]
+                # clip_W = W//camera.metadata["clip_downscale_factor"]
+                #Very messy will fix to get it from camera metadata
+                self.random_pixels = self.datamanager.random_pixels.to(self.device)
+                clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
+                clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
+                # print("Current scale: ", self.datamanager.curr_scale, "Clip scale mean: ", clip_scale.mean(), "Clip scale max: ", clip_scale.max(), "Clip scale min: ", clip_scale.min())
+                # import pdb; pdb.set_trace()
+                clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
 
-            field_output = NDRasterizeGaussians.apply(
-                clip_xys.detach(),
-                clip_depths.detach(),
-                clip_radii.detach(),
-                clip_conics.detach(),
-                clip_num_tiles_hit,
-                # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
-                # clip_hash_encoding[self.dropout_mask],
-                clip_hash_encoding,
-                torch.sigmoid(opacities_crop.detach().clone()),
-                clip_H,
-                clip_W,
-                torch.zeros(clip_hash_encoding.shape[1], device=self.device),
-            )
-            field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
-            clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
-            # dino_output = field_output[GaussianLERFFieldHeadNames.DINO].to(dtype=torch.float32)
+                field_output = NDRasterizeGaussians.apply(
+                    clip_xys.detach(),
+                    clip_depths.detach(),
+                    clip_radii.detach(),
+                    clip_conics.detach(),
+                    clip_num_tiles_hit,
+                    # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
+                    # clip_hash_encoding[self.dropout_mask],
+                    clip_hash_encoding,
+                    torch.sigmoid(opacities_crop.detach().clone()),
+                    clip_H,
+                    clip_W,
+                    torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                )
+                field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
+                clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+                # dino_output = field_output[GaussianLERFFieldHeadNames.DINO].to(dtype=torch.float32)
 
-            # import pdb; pdb.set_trace()
-            outputs["clip"] = clip_output
-            outputs["clip_scale"] = clip_scale
+                # import pdb; pdb.set_trace()
+                outputs["clip"] = clip_output
+                outputs["clip_scale"] = clip_scale
             # outputs["dino"] = dino_output
         if not self.training:
                     # N x B x 1; N

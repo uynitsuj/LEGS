@@ -215,16 +215,16 @@ class L3GSPipeline(VanillaPipeline):
     def monodepth_inference(self, image):
         # print(type(image))
         # Down-sample
-        # down_height = image.shape[0] // 2
-        # down_width = image.shape[1] // 2
-        # imagedown = cv2.resize(np.array(image), (down_width, down_height), interpolation=cv2.INTER_AREA)
+        down_height = image.shape[0] // 2
+        down_width = image.shape[1] // 2
+        imagedown = cv2.resize(np.array(image), (down_width, down_height), interpolation=cv2.INTER_AREA)
         
-        depth = self.depthmodel.get_depth(image)
+        depth = self.depthmodel.get_depth(imagedown)
 
         # import pdb; pdb.set_trace()
         # Up-resolution
-        # depth = cv2.resize(np.array(depth), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
-        # depth = F.interpolate(depth, size=(image.shape[0], image.shape[1]), mode='bilinear', align_corners=False)
+        # depth = cv2.resize(np.array(depth.cpu()), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
+        depth = F.interpolate(depth, size=(image.shape[0], image.shape[1]), mode='bilinear', align_corners=False)
 
 
 
