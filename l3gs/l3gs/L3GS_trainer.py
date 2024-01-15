@@ -375,7 +375,7 @@ class Trainer:
         # return img_out, dep_out, retc
 
     # @profile
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 100):
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 300):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -462,7 +462,7 @@ class Trainer:
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale=1,
+                    scale=0.5,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
@@ -470,7 +470,7 @@ class Trainer:
                 )
         self.viewer_state.camera_handles[cidx] = camera_handle
         self.viewer_state.original_c2w[cidx] = c2w
-        project_interval = 3
+        project_interval = 4
         if self.done_scale_calc and idx % project_interval == 0:
             depth = self.pipeline.monodepth_inference(image_data.numpy())
             # depth = torch.rand((1,1,480,640))
@@ -608,7 +608,7 @@ class Trainer:
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
             step = 0
-            num_add = 25
+            num_add = 4
             
             while True:
                 rclpy.spin_once(trainer_node,timeout_sec=0.00)
@@ -641,8 +641,12 @@ class Trainer:
                 #         print("clip_out_queue get took " + str((time.time()-start)) + " s")
                     # import pdb; pdb.set_trace()
                     
-                    # random_list.append(eself.clip_out_queue.get())
+                    # random_list.append(self.clip_out_queue.get())
                     # self.process_image(self.image_process_queue.pop(0), step)
+                        
+
+                # while len(self.image_process_queue) > 0:
+                #     self.process_image(self.image_process_queue.pop(0), step)
                         
                 while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
                     self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())

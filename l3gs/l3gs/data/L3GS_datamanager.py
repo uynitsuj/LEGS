@@ -145,6 +145,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # assert len(self.train_unseen_cameras) > 0, "No data found in dataset"
 
         super().__init__()
+        self.use_clip = False
         self.clip_out_queue = clip_out_queue
 
 
@@ -441,7 +442,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         ########
 
         #Pick a random scale from min to max and then the clip features at that scale
-        if step > 29000:
+        if step > 39000 and self.use_clip:
             H, W = data["image"].shape[:2]
             scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
             # scale = torch.tensor(0.1).to(self.device)
@@ -536,12 +537,15 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # self.clip_interpolator.add_images(img.unsqueeze(0))
         # dino = dino.to(self.device)
         if clip is not None: 
+            self.use_clip = True
             for i, tr in enumerate(self.clip_interpolator.tile_sizes):
                 clip[i] = clip[i].to(self.device)
                 if self.clip_interpolator.data_dict[i].data is not None:
                     self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
                 else:
                     self.clip_interpolator.data_dict[i].data = clip[i]
+        else:
+            self.use_clip = False
         # if self.dino_dataloader.data is None:
         #     self.dino_dataloader.data = dino
         # else:

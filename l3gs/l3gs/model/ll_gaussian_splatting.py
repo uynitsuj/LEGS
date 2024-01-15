@@ -107,9 +107,9 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """Gaussian Splatting Model Config"""
 
     _target: Type = field(default_factory=lambda: LLGaussianSplattingModel)
-    warmup_length: int = 5000
+    warmup_length: int = 500
     """period of steps where refinement is turned off"""
-    refine_every: int = 100
+    refine_every: int = 75
     """period of steps where gaussians are culled and densified"""
     resolution_schedule: int = 250
     """training starts at 1/d resolution, every n steps this is doubled"""
@@ -121,7 +121,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """threshold of scale for culling gaussians"""
     reset_alpha_every: int = 60
     """Every this many refinement steps, reset the alpha"""
-    densify_grad_thresh: float = 0.0002
+    densify_grad_thresh: float = 0.0001
     """threshold of positional gradient norm for densifying gaussians"""
     densify_size_thresh: float = 0.01
     """below this size, gaussians are *duplicated*, otherwise split"""
@@ -131,7 +131,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """every n intervals turn on another sh degree"""
     cull_screen_size: float = 0.9
     """if a gaussian is more than this percent of screen space, cull it"""
-    split_screen_size: float = 0.05
+    split_screen_size: float = 0.025
     """if a gaussian is more than this percent of screen space, split it"""
     stop_screen_size_at: int = 4000
     """stop culling/splitting at this step WRT screen size of gaussians"""
@@ -141,7 +141,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """weight of ssim loss"""
     stop_split_at: int = 15000
     """stop splitting at this step"""
-    sh_degree: int = 3
+    sh_degree: int = 4
     """maximum degree of spherical harmonics to use"""
     clip_loss_weight: float = 0.1
     """weight of clip loss"""
@@ -318,10 +318,12 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                 colors = torch.stack(colors, dim=0).to(self.device)
                 numpts = len(deprojected)
                 # print("Adding {} new points".format(numpts))
-                distances, _ = self.k_nearest_sklearn(deprojected, 3)
-                distances = torch.from_numpy(distances)
+                # distances, _ = self.k_nearest_sklearn(deprojected, 3)
+                # distances = torch.from_numpy(distances)
                 # find the average of the three nearest neighbors for each point and use that as the scale
-                avg_dist = distances.mean(dim=-1, keepdim=True)/6
+                # avg_dist = distances.mean(dim=-1, keepdim=True)/6
+                # print("avg_dist: " + str(avg_dist))
+                avg_dist = torch.Tensor([[2], [2], [2], [2]])/3
                 self.means = torch.nn.Parameter(torch.cat([self.means.detach(), deprojected], dim=0))
 
                 self.scales = torch.nn.Parameter(torch.cat([self.scales.detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
@@ -717,7 +719,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         depth_im = None
         # if not self.training:
 
-        if self.step > 30000:
+        if self.step > 40000 and self.datamanager.use_clip:
             depth_im = RasterizeGaussians.apply(
                 self.xys,
                 depths,
@@ -817,7 +819,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         gt_rgb = gt_img.to(self.device)  # RGB or RGBA image
         predicted_rgb = outputs["rgb"]
         assert predicted_rgb.shape == gt_rgb.shape
-        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
         metrics_dict["gaussian_count"] = self.num_points
@@ -841,7 +843,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         #     gt_img = batch["image"]
         gt_img = batch["image"]
         Ll1 = torch.abs(gt_img - outputs["rgb"]).mean()
-        # simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], outputs["rgb"].permute(2, 0, 1)[None, ...])
+        simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], outputs["rgb"].permute(2, 0, 1)[None, ...])
         if self.step % 10 == 0:
             # Before, we made split sh and colors onto different optimizer, with shs having a low learning rate
             # This is slow, instead we apply a regularization every few steps
@@ -852,7 +854,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         else:
             sh_reg = torch.tensor(0.0).to(self.device)
             scale_reg = torch.tensor(0.0).to(self.device)
-        loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 #+ self.config.ssim_lambda * simloss
+        loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss
         loss_dict["sh_reg"] = sh_reg
         loss_dict['scale_reg'] = scale_reg
         

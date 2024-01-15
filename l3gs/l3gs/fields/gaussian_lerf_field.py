@@ -126,17 +126,17 @@ class GaussianLERFField(Field):
             },
         )
 
-        self.dino_net = tcnn.Network(
-            n_input_dims=tot_out_dims,
-            n_output_dims=384,
-            network_config={
-                "otype": "CutlassMLP",
-                "activation": "ReLU",
-                "output_activation": "None",
-                "n_neurons": 256,
-                "n_hidden_layers": 1,
-            },
-        )
+        # self.dino_net = tcnn.Network(
+        #     n_input_dims=tot_out_dims,
+        #     n_output_dims=384,
+        #     network_config={
+        #         "otype": "CutlassMLP",
+        #         "activation": "ReLU",
+        #         "output_activation": "None",
+        #         "n_neurons": 256,
+        #         "n_hidden_layers": 1,
+        #     },
+        # )
 
         # self.clip_feature_net = tcnn.Network(
         #     n_input_dims=feature_dims+1,
@@ -190,8 +190,8 @@ class GaussianLERFField(Field):
         # clip_pass = self.clip_net(torch.cat([encoding, clip_scales.view(-1, 1)], dim=-1))
         outputs[GaussianLERFFieldHeadNames.CLIP] = (clip_pass / clip_pass.norm(dim=-1, keepdim=True)).to(torch.float32)
 
-        dino_pass = self.dino_net(x).view(positions.shape[0], -1)
-        outputs[GaussianLERFFieldHeadNames.DINO] = dino_pass
+        # dino_pass = self.dino_net(x).view(positions.shape[0], -1)
+        # outputs[GaussianLERFFieldHeadNames.DINO] = dino_pass
 
         return outputs
 
@@ -211,6 +211,6 @@ class GaussianLERFField(Field):
         # clip_pass = self.clip_feature_net(clip_features)
         outputs[GaussianLERFFieldHeadNames.CLIP] = (clip_pass / clip_pass.norm(dim=-1, keepdim=True)).to(torch.float32)
 
-        dino_pass = self.dino_net(clip_features).view(clip_features.shape[0], -1)
-        outputs[GaussianLERFFieldHeadNames.DINO] = dino_pass
+        # dino_pass = self.dino_net(clip_features).view(clip_features.shape[0], -1)
+        # outputs[GaussianLERFFieldHeadNames.DINO] = dino_pass
         return outputs
