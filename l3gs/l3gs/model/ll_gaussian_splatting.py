@@ -942,6 +942,9 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                ########################
                 reset_interval = self.config.reset_alpha_every * self.config.refine_every
                 if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
+                    # import pdb; pdb.set_trace()
+                    outputs["clip"] = None
+                    return outputs
                     with torch.no_grad():
                         clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
                     # clip_H = H//camera.metadata["clip_downscale_factor"]
@@ -1063,6 +1066,16 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         loss_dict["main_loss"] = (1-self.config.ssim_lambda)*Ll1 + self.config.ssim_lambda*simloss
 
         if self.training and 'clip' in outputs: 
+            import pdb; pdb.set_trace()
+            import matplotlib.pyplot as plt
+            # self.image_encoder.set_positives(["table"])
+            probs = self.image_encoder.get_relevancy(batch["clip"].view(-1, self.image_encoder.embedding_dim), 0)
+            color = apply_colormap(probs[..., 0:1])
+            #visualize the relevancy with plt
+            plt.imshow(color.cpu().numpy())
+            #save plt
+            plt.savefig(f"relevancy_{self.step}.png")
+
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
                 outputs["clip"], batch["clip"].to(torch.float32), delta=1.25, reduction="none"
             )

@@ -193,7 +193,7 @@ class L3GSPipeline(VanillaPipeline):
             # self.mask_volume(boxes) #This will deal with the masks in the datamanager
         # self.datamanager.add_image(img, pose)
         self.datamanager.add_image(img)
-        self.img_count += 1
+        # self.img_count += 1
 
     # this actually adds the image to the datamanager + dataset...?
     # @profile
@@ -207,6 +207,7 @@ class L3GSPipeline(VanillaPipeline):
         print("Adding image to train dataset",pose.camera_to_worlds[:3,3].flatten())
         
         self.datamanager.process_image(img, pose, clip, dino)
+        self.img_count += 1
         # self.datamanager.train_pixel_sampler.nonzero_indices = torch.nonzero(self.datamanager.train_dataset.mask_tensor[0:len(self.datamanager.train_dataset), ..., 0].to(self.device), as_tuple=False)
 
     # def print_num_means(self):

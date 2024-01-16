@@ -603,7 +603,7 @@ class Trainer:
         #     }
         return Optimizers(optimizer_config, param_groups)
 
-    @profile
+    # @profile
     def train(self) -> None:
         print("IM IN")
         """Train the model."""
