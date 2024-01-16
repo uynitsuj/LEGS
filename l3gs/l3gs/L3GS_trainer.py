@@ -206,6 +206,7 @@ class Trainer:
         self.box_viser_handles = []
         self.deprojected_queue = deque()
         self.colors_queue = deque()
+        self.train_lerf = False
 
 
     def handle_stage_btn(self, handle: ViewerButton):
@@ -334,6 +335,10 @@ class Trainer:
         print("Terminated droidslam")
         # proc.terminate()
 
+    def handle_train_lerf(self, handle: ViewerButton):
+        print("Training LERF")
+        self.train_lerf = True
+
 
     def add_img_callback(self, msg:ImagePose, decode_only=False):
         '''
@@ -343,6 +348,7 @@ class Trainer:
         '''
         # image: Image = msg.img
         # camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+        # print('self.imgidx: ' + str(self.imgidx))
         # # CONSOLE.print("Adding image to dataset")
         # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
         image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
@@ -375,16 +381,19 @@ class Trainer:
         # return img_out, dep_out, retc
 
     # @profile
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 300):
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 250, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
         scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
         # import pdb; pdb.set_trace()
         H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
-        c2w = camera.camera_to_worlds.cpu()
-        depth_image = depth_image.cpu()
-        image = image.cpu()
+        # c2w = camera.camera_to_worlds.cpu()
+        # depth_image = depth_image.cpu()
+        # image = image.cpu()
+        c2w = camera.camera_to_worlds.to(device)
+        depth_image = depth_image.to(device)
+        image = image.to(device)
         fx = camera.fx.item()
         fy = camera.fy.item()
         # cx = camera.cx.item()
@@ -392,7 +401,7 @@ class Trainer:
 
         _, _, height, width = depth_image.shape
 
-        grid_x, grid_y = torch.meshgrid(torch.arange(width, device='cpu'), torch.arange(height, device='cpu'), indexing='ij')
+        grid_x, grid_y = torch.meshgrid(torch.arange(width, device = device), torch.arange(height, device = device), indexing='ij')
         grid_x = grid_x.transpose(0,1).float()
         grid_y = grid_y.transpose(0,1).float()
 
@@ -417,7 +426,7 @@ class Trainer:
         ones = torch.ones_like(sampled_depth)
         P_camera = torch.stack([X_camera, Y_camera, -sampled_depth, ones], dim=1)
         
-        homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device='cpu')
+        homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device=device)
         camera_to_world_homogenized = torch.cat((c2w, homogenizing_row), dim=0)
 
         P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
@@ -429,7 +438,7 @@ class Trainer:
         '''
         This function actually adds things to the dataset
         '''
-        start = time.time()
+        # start = time.time()
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
         image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
@@ -471,16 +480,19 @@ class Trainer:
         self.viewer_state.camera_handles[cidx] = camera_handle
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 4
+        # print('process idx: ' + str(idx))
         if self.done_scale_calc and idx % project_interval == 0:
             depth = self.pipeline.monodepth_inference(image_data.numpy())
             # depth = torch.rand((1,1,480,640))
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
             self.deprojected_queue.extend(deprojected)
             self.colors_queue.extend(colors)
-        print("Time inside process image:", time.time() - start)
+        # print("Time inside process image:", time.time() - start)
             # import pdb; pdb.set_trace()
 
 
+    # def add_to_clip(clip_dict = None):
+    #     self.pipeline.add_to_clip
 
     def setup(self, test_mode: Literal["test", "val", "inference"] = "val") -> None:
         """Setup the Trainer by calling other setup functions.
@@ -510,10 +522,11 @@ class Trainer:
         # self.pipeline.droidslam_start = ViewerButton(name="Start Droidslam", cb_hook=self.handle_start_droidslam)
 
         # self.pipeline.lifelong_exp_start = ViewerButton(name="Start Exp", cb_hook=self.handle_start_bag, disabled=True)
-        self.pipeline.stage_button = ViewerButton(name="Update Stage", cb_hook=self.handle_stage_btn, disabled=True)
-        self.pipeline.calc_metric = ViewerButton(name="Calculate Metric", cb_hook=self.handle_calc_metric)
-        self.pipeline.percentage_masked = ViewerButton(name="Percent Masked", cb_hook=self.handle_percentage_masked)
-        self.pipeline.plot_verbose = ViewerCheckbox(name="Plot Verbose", default_value=True)
+        # self.pipeline.stage_button = ViewerButton(name="Update Stage", cb_hook=self.handle_stage_btn, disabled=True)
+        # self.pipeline.calc_metric = ViewerButton(name="Calculate Metric", cb_hook=self.handle_calc_metric)
+        # self.pipeline.percentage_masked = ViewerButton(name="Percent Masked", cb_hook=self.handle_percentage_masked)
+        # self.pipeline.plot_verbose = ViewerCheckbox(name="Plot Verbose", default_value=True)
+        self.pipeline.train_lerf = ViewerButton(name="Train LERF", cb_hook=self.handle_train_lerf)
 
         self.optimizers = self.setup_optimizers()
 
@@ -590,7 +603,7 @@ class Trainer:
         #     }
         return Optimizers(optimizer_config, param_groups)
 
-    # @profile
+    @profile
     def train(self) -> None:
         print("IM IN")
         """Train the model."""
@@ -609,6 +622,7 @@ class Trainer:
             num_iterations = self.config.max_num_iterations
             step = 0
             num_add = 4
+            self.imgidx = 0
             
             while True:
                 rclpy.spin_once(trainer_node,timeout_sec=0.00)
@@ -626,6 +640,7 @@ class Trainer:
                     else:
                         self.add_img_callback(msg)
                         self.image_process_queue.append(msg)
+                        self.imgidx += 1
 
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
@@ -645,11 +660,14 @@ class Trainer:
                     # self.process_image(self.image_process_queue.pop(0), step)
                         
 
-                # while len(self.image_process_queue) > 0:
-                #     self.process_image(self.image_process_queue.pop(0), step)
+                while len(self.image_process_queue) > 0:
+                    self.process_image(self.image_process_queue.pop(0), step)
                         
-                while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
-                    self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())
+                # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
+                #     self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())
+                if self.train_lerf and not self.clip_out_queue.empty():
+                    print("adding clip pyramid embeddings")
+                    self.pipeline.add_to_clip(self.clip_out_queue.get(), step)
 
 
                 if self.training_state == "paused":
@@ -726,7 +744,7 @@ class Trainer:
 
                         # time the forward pass
                             
-                        start = time.time()
+                        # start = time.time()
                         loss, loss_dict, metrics_dict = self.train_iteration(step)
                         
                         # add deprojected gaussians from monocular depth
@@ -737,9 +755,9 @@ class Trainer:
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
                         
-                        print(len(self.deprojected_queue))
+                        # print(len(self.deprojected_queue))
 
-                        print(f"Train + deprojecting took {time.time()-start} seconds")
+                        # print(f"Train + deprojecting took {time.time()-start} seconds")
 
                         # training callbacks after the training iteration
                         for callback in self.callbacks:
@@ -959,12 +977,12 @@ class Trainer:
         ]
         self.optimizers.zero_grad_some(needs_zero)
         cpu_or_cuda_str: str = self.device.split(":")[0]
-        start = time.time()
+        # start = time.time()
         with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
             _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
-            end = time.time()
-            elapsed = str((end-start)*1e3)
-            print("get_train_loss time: "+ elapsed + "(ms)")
+            # end = time.time()
+            # elapsed = str((end-start)*1e3)
+            # print("get_train_loss time: "+ elapsed + "(ms)")
             loss = functools.reduce(torch.add, loss_dict.values())
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [

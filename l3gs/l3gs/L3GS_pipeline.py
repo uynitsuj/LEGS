@@ -212,6 +212,9 @@ class L3GSPipeline(VanillaPipeline):
     # def print_num_means(self):
         # print(self.model.means.shape[0])
 
+    def add_to_clip(self, clip: dict, step: int):
+        self.datamanager.add_to_clip(clip, step)
+
     def monodepth_inference(self, image):
         # print(type(image))
         # Down-sample

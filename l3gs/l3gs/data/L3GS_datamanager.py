@@ -146,6 +146,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         super().__init__()
         self.use_clip = False
+        self.lerf_step = 0
         self.clip_out_queue = clip_out_queue
 
 
@@ -442,26 +443,28 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         ########
 
         #Pick a random scale from min to max and then the clip features at that scale
-        if step > 39000 and self.use_clip:
-            H, W = data["image"].shape[:2]
-            scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
-            # scale = torch.tensor(0.1).to(self.device)
-            self.curr_scale = scale
-            scaled_height = H//self.config.clip_downscale_factor
-            scaled_width = W//self.config.clip_downscale_factor
-            self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
+        if self.use_clip:
+            if step - self.lerf_step > 2000:
+                # print("Training CLIP")
+                H, W = data["image"].shape[:2]
+                scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
+                # scale = torch.tensor(0.1).to(self.device)
+                self.curr_scale = scale
+                scaled_height = H//self.config.clip_downscale_factor
+                scaled_width = W//self.config.clip_downscale_factor
+                self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
 
-            x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
-            y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
-            image_idx_tensor = torch.ones(scaled_height, scaled_width, 1)*image_idx
-            positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
-            positions = positions[self.random_pixels]
-            with torch.no_grad():
-                data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)[0], self.clip_interpolator(positions, scale)[1]
-                # data["dino"] = self.dino_dataloader(positions)
+                x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
+                y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
+                image_idx_tensor = torch.ones(scaled_height, scaled_width, 1)*image_idx
+                positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
+                positions = positions[self.random_pixels]
+                with torch.no_grad():
+                    data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)[0], self.clip_interpolator(positions, scale)[1]
+                    # data["dino"] = self.dino_dataloader(positions)
+                
+                camera.metadata["clip_downscale_factor"] = self.config.clip_downscale_factor
             
-            camera.metadata["clip_downscale_factor"] = self.config.clip_downscale_factor
-        
         return camera, data
 
     def next_eval(self, step: int) -> Tuple[Cameras, Dict]:
@@ -551,6 +554,21 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # else:
         #     self.dino_dataloader.data = torch.cat([self.dino_dataloader.data, dino], dim=0)
 
+    def add_to_clip(self, clip, step):
+        if clip is not None: 
+            if self.use_clip == False:
+                print("Using CLIP")
+                self.lerf_step = step
+                print("Step recorded as step: " + str(step))
+                self.use_clip = True
+            for i, tr in enumerate(self.clip_interpolator.tile_sizes):
+                clip[i] = clip[i].to(self.device)
+                if self.clip_interpolator.data_dict[i].data is not None:
+                    self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
+                else:
+                    self.clip_interpolator.data_dict[i].data = clip[i]
+        else:
+            self.use_clip = False
 
 
     # def next_train(self, step: int) -> Tuple[RayBundle, Dict]:

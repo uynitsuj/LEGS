@@ -223,12 +223,12 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         self.crop_box: Optional[OrientedBox] = None
         self.back_color = torch.zeros(3)
         self.viewer_control = ViewerControl()
-        # self.viser_scale_ratio = 0.1
+        self.viser_scale_ratio = 0.1
 
         self.crop_to_word = ViewerButton("Crop gaussians to word", cb_hook=self.crop_to_word_cb)
         self.reset_crop = ViewerButton("Reset crop", cb_hook=self.reset_crop_cb)
         self.crop_scale = ViewerSlider("Crop scale", 0.1, 0, 3.0, 0.01)
-        self.relevancy_thresh = ViewerSlider("Relevancy Thresh", 0.5, 0, 1.0, 0.01)
+        self.relevancy_thresh = ViewerSlider("Relevancy Thresh", 0.0, 0, 1.0, 0.01)
 
         self._crop_center_init = None
         self.crop_ids = None#torch.ones_like(self.means[:,0],dtype=torch.bool)
@@ -531,6 +531,13 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         )
         return cbs
 
+    def _get_downscale_factor(self):
+        # if self.training:
+        #     return 2 ** max((self.config.num_downscales - self.step // self.config.resolution_schedule), 0)
+        # else:
+        #     return 1
+        return 1
+
     def project_gaussians(self, camera, downscale_factor=1):
         if not isinstance(camera, Cameras):
             print("Called get_outputs with not a camera")
@@ -602,6 +609,203 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         camera.rescale_output_resolution(camera_downscale)
         return xys, depths, radii, conics, num_tiles_hit, cov3d, W, H
 
+    # def get_outputs(self, camera: Cameras) -> Dict[str, Union[torch.Tensor, List]]:
+    #     """Takes in a Ray Bundle and returns a dictionary of outputs.
+
+    #     Args:
+    #         ray_bundle: Input bundle of rays. This raybundle should have all the
+    #         needed information to compute the outputs.
+
+    #     Returns:
+    #         Outputs of model. (ie. rendered colors)
+    #     """
+    #     if not isinstance(camera, Cameras):
+    #         print("Called get_outputs with not a camera")
+    #         return {}
+    #     assert camera.shape[0] == 1, "Only one camera at a time"
+    #     outputs = {}
+    #     if self.training:
+    #         # currently relies on the branch vickie/camera-grads
+    #         self.camera_optimizer.apply_to_camera(camera)
+    #     if self.training:
+    #         background = torch.rand(3, device=self.device)
+    #     else:
+    #         background = self.back_color
+    #     if self.crop_box is not None and not self.training:
+    #         crop_ids = self.crop_box.within(self.means).squeeze()
+    #         if crop_ids.sum() == 0:
+    #             return {"rgb": background.repeat(camera.height.item(), camera.width.item(), 1)}
+    #     else:
+    #         crop_ids = None
+    #     camera_downscale = self._get_downscale_factor()
+    #     # camera.rescale_output_resolution(1 / camera_downscale)
+    #     # shift the camera to center of scene looking at center
+    #     R = camera.camera_to_worlds[0, :3, :3]  # 3 x 3
+    #     T = camera.camera_to_worlds[0, :3, 3:4]  # 3 x 1
+    #     # flip the z axis to align with gsplat conventions
+    #     R_edit = torch.tensor(vtf.SO3.from_x_radians(np.pi).as_matrix(), device=R.device, dtype=R.dtype)
+    #     R = R @ R_edit
+    #     # analytic matrix inverse to get world2camera matrix
+    #     R_inv = R.T
+    #     T_inv = -R_inv @ T
+    #     viewmat = torch.eye(4, device=R.device, dtype=R.dtype)
+    #     viewmat[:3, :3] = R_inv
+    #     viewmat[:3, 3:4] = T_inv
+    #     # calculate the FOV of the camera given fx and fy, width and height
+    #     cx = camera.cx.item()
+    #     cy = camera.cy.item()
+    #     fovx = 2 * math.atan(camera.width / (2 * camera.fx))
+    #     fovy = 2 * math.atan(camera.height / (2 * camera.fy))
+    #     W, H = camera.width.item(), camera.height.item()
+    #     self.last_size = (H, W)
+    #     projmat = projection_matrix(0.001, 1000, fovx, fovy, device=self.device)
+    #     BLOCK_X, BLOCK_Y = 16, 16
+    #     tile_bounds = (
+    #         (W + BLOCK_X - 1) // BLOCK_X,
+    #         (H + BLOCK_Y - 1) // BLOCK_Y,
+    #         1,
+    #     )
+
+    #     if crop_ids is not None:
+    #         opacities_crop = self.opacities[crop_ids]
+    #         means_crop = self.means[crop_ids]
+    #         colors_crop = self.colors_all[crop_ids]
+    #         scales_crop = self.scales[crop_ids]
+    #         quats_crop = self.quats[crop_ids]
+    #     else:
+    #         opacities_crop = self.opacities
+    #         means_crop = self.means
+    #         colors_crop = self.colors_all
+    #         scales_crop = self.scales
+    #         quats_crop = self.quats
+    #     self.xys, depths, self.radii, conics, num_tiles_hit, cov3d = ProjectGaussians.apply(
+    #         means_crop,
+    #         torch.exp(scales_crop),
+    #         1,
+    #         quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+    #         viewmat.squeeze()[:3, :],
+    #         projmat.squeeze() @ viewmat.squeeze(),
+    #         camera.fx.item(),
+    #         camera.fy.item(),
+    #         cx,
+    #         cy,
+    #         H,
+    #         W,
+    #         tile_bounds,
+    #     )
+    #     # import pdb; pdb.set_trace()
+
+    #     if (self.radii).sum() == 0:
+    #         return {"rgb": background.repeat(camera.height.item(), camera.width.item(), 1)}
+
+    #     # Important to allow xys grads to populate properly
+    #     if self.training:
+    #         self.xys.retain_grad()
+    #     if self.config.sh_degree > 0:
+    #         viewdirs = means_crop.detach() - camera.camera_to_worlds.detach()[..., :3, 3]  # (N, 3)
+    #         viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
+    #         n = min(self.step // self.config.sh_degree_interval, self.config.sh_degree)
+    #         rgbs = SphericalHarmonics.apply(n, viewdirs, colors_crop)
+    #         rgbs = torch.clamp(rgbs + 0.5, 0.0, 1.0)
+    #     else:
+    #         rgbs = self.get_colors.squeeze()  # (N, 3)
+    #         rgbs = torch.sigmoid(rgbs)
+    #     rgb = RasterizeGaussians.apply(
+    #         self.xys,
+    #         depths,
+    #         self.radii,
+    #         conics,
+    #         num_tiles_hit,
+    #         rgbs,
+    #         torch.sigmoid(opacities_crop),
+    #         H,
+    #         W,
+    #         background,
+    #     )
+    #     outputs["rgb"] = rgb
+    #     depth_im = None
+    #     # if not self.training:
+    #     if self.datamanager.use_clip:
+    #         if self.step - self.datamanager.lerf_step > 3000:
+    #             # print("rasterizing CLIP features")
+    #             depth_im = RasterizeGaussians.apply(
+    #                 self.xys,
+    #                 depths,
+    #                 self.radii,
+    #                 conics,
+    #                 num_tiles_hit,
+    #                 depths[:, None].repeat(1, 3),
+    #                 torch.sigmoid(opacities_crop),
+    #                 H,
+    #                 W,
+    #                 torch.ones(3, device=self.device) * 10,
+    #             )[..., 0:1]
+    #             # # rescale the camera back to original dimensions
+    #             # camera.rescale_output_resolution(camera_downscale)
+
+    #             outputs["depth"] = depth_im
+
+    #         ########################
+    #         # CLIP Relevancy Field #
+    #         ########################
+    #             reset_interval = self.config.reset_alpha_every * self.config.refine_every
+    #             if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
+    #                 with torch.no_grad():
+    #                     clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
+    #                 # clip_H = H//camera.metadata["clip_downscale_factor"]
+    #                 # clip_W = W//camera.metadata["clip_downscale_factor"]
+    #                 #Very messy will fix to get it from camera metadata
+    #                 self.random_pixels = self.datamanager.random_pixels.to(self.device)
+    #                 clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
+    #                 clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
+    #                 # print("Current scale: ", self.datamanager.curr_scale, "Clip scale mean: ", clip_scale.mean(), "Clip scale max: ", clip_scale.max(), "Clip scale min: ", clip_scale.min())
+    #                 # import pdb; pdb.set_trace()
+    #                 clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+
+    #                 field_output = NDRasterizeGaussians.apply(
+    #                     clip_xys.detach(),
+    #                     clip_depths.detach(),
+    #                     clip_radii.detach(),
+    #                     clip_conics.detach(),
+    #                     clip_num_tiles_hit,
+    #                     # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
+    #                     # clip_hash_encoding[self.dropout_mask],
+    #                     clip_hash_encoding,
+    #                     torch.sigmoid(opacities_crop.detach().clone()),
+    #                     clip_H,
+    #                     clip_W,
+    #                     torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+    #                 )
+    #                 field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
+    #                 clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+    #                 # dino_output = field_output[GaussianLERFFieldHeadNames.DINO].to(dtype=torch.float32)
+
+    #                 # import pdb; pdb.set_trace()
+    #                 outputs["clip"] = clip_output
+    #                 outputs["clip_scale"] = clip_scale
+    #                 # outputs["dino"] = dino_output
+    #             if not self.training:
+    #                 # N x B x 1; N
+    #                 max_across, self.best_scales = self.get_max_across(
+    #                     self.xys,
+    #                     depths,
+    #                     self.radii,
+    #                     conics,
+    #                     num_tiles_hit,
+    #                     torch.sigmoid(self.opacities[crop_ids]),
+    #                     H,
+    #                     W,
+    #                 )
+    #                 # import pdb; pdb.set_trace()
+    #                 for i in range(len(self.image_encoder.positives)):
+    #                     max_across[i][max_across[i] < self.relevancy_thresh.value] = 0
+    #                     # relevancy_rasterized[relevancy_rasterized < 0.5] = 0
+    #                     outputs[f"relevancy_{i}"] = max_across[i].view(H, W, -1)
+    #                     # outputs[f"relevancy_rasterized_{i}"] = relevancy_rasterized.view(H, W, -1)
+    #                     # outputs[f"best_scales_{i}"] = best_scales[i]
+
+    #     return outputs
+
     def get_outputs(self, camera: Cameras) -> Dict[str, Union[torch.Tensor, List]]:
         """Takes in a Ray Bundle and returns a dictionary of outputs.
 
@@ -630,7 +834,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                 return {"rgb": background.repeat(camera.height.item(), camera.width.item(), 1)}
         else:
             crop_ids = None
-        # camera_downscale = self._get_downscale_factor()
+        camera_downscale = self._get_downscale_factor()
         # camera.rescale_output_resolution(1 / camera_downscale)
         # shift the camera to center of scene looking at center
         R = camera.camera_to_worlds[0, :3, :3]  # 3 x 3
@@ -716,67 +920,79 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
             background,
         )
         outputs["rgb"] = rgb
+        
         depth_im = None
-        # if not self.training:
+        if self.datamanager.use_clip:
+            if self.step - self.datamanager.lerf_step > 3000:
+                depth_im = RasterizeGaussians.apply(
+                    self.xys.detach(),
+                    depths,
+                    self.radii,
+                    conics.detach(),
+                    num_tiles_hit,
+                    depths[:, None].repeat(1, 3),
+                    torch.sigmoid(opacities_crop.detach()),
+                    H,
+                    W,
+                    torch.ones(3, device=self.device) * 10,
+                )[..., 0:1]
+                outputs["depth"] = depth_im
+                ########################
+                # CLIP Relevancy Field #
+               ########################
+                reset_interval = self.config.reset_alpha_every * self.config.refine_every
+                if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
+                    with torch.no_grad():
+                        clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
+                    # clip_H = H//camera.metadata["clip_downscale_factor"]
+                    # clip_W = W//camera.metadata["clip_downscale_factor"]
+                    #Very messy will fix to get it from camera metadata
+                    self.random_pixels = self.datamanager.random_pixels.to(self.device)
+                    clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
+                    clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
+                    # print("Current scale: ", self.datamanager.curr_scale, "Clip scale mean: ", clip_scale.mean(), "Clip scale max: ", clip_scale.max(), "Clip scale min: ", clip_scale.min())
+                    # import pdb; pdb.set_trace()
+                    clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
 
-        if self.step > 40000 and self.datamanager.use_clip:
-            depth_im = RasterizeGaussians.apply(
-                self.xys,
-                depths,
-                self.radii,
-                conics,
-                num_tiles_hit,
-                depths[:, None].repeat(1, 3),
-                torch.sigmoid(opacities_crop),
-                H,
-                W,
-                torch.ones(3, device=self.device) * 10,
-            )[..., 0:1]
-            # # rescale the camera back to original dimensions
-            # camera.rescale_output_resolution(camera_downscale)
+                    field_output = NDRasterizeGaussians.apply(
+                        clip_xys.detach(),
+                        clip_depths.detach(),
+                        clip_radii.detach(),
+                        clip_conics.detach(),
+                        clip_num_tiles_hit,
+                        # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
+                        # clip_hash_encoding[self.dropout_mask],
+                        clip_hash_encoding,
+                        torch.sigmoid(opacities_crop.detach().clone()),
+                        clip_H,
+                        clip_W,
+                        torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                    )
+                    # field_output = NDRasterizeGaussians.apply(
+                    #     self.xys.detach(),
+                    #     depths.detach(),
+                    #     self.radii.detach(),
+                    #     conics.detach(),
+                    #     num_tiles_hit,
+                    #     # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
+                    #     # clip_hash_encoding[self.dropout_mask],
+                    #     clip_hash_encoding,
+                    #     torch.sigmoid(opacities_crop.detach()),
+                    #     clip_H,
+                    #     clip_W,
+                    #     torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                    # )
+                    # Normalize the clip output
+                    # clip_output = clip_output / (clip_output.norm(dim=-1, keepdim=True) + 1e-6)
+                    field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
+                    clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+                    # dino_output = field_output[GaussianLERFFieldHeadNames.DINO].to(dtype=torch.float32)
 
-            outputs["depth"] = depth_im
-
-        ########################
-        # CLIP Relevancy Field #
-        ########################
-            reset_interval = self.config.reset_alpha_every * self.config.refine_every
-            if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
-                with torch.no_grad():
-                    clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
-                # clip_H = H//camera.metadata["clip_downscale_factor"]
-                # clip_W = W//camera.metadata["clip_downscale_factor"]
-                #Very messy will fix to get it from camera metadata
-                self.random_pixels = self.datamanager.random_pixels.to(self.device)
-                clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
-                clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
-                # print("Current scale: ", self.datamanager.curr_scale, "Clip scale mean: ", clip_scale.mean(), "Clip scale max: ", clip_scale.max(), "Clip scale min: ", clip_scale.min())
-                # import pdb; pdb.set_trace()
-                clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
-
-                field_output = NDRasterizeGaussians.apply(
-                    clip_xys.detach(),
-                    clip_depths.detach(),
-                    clip_radii.detach(),
-                    clip_conics.detach(),
-                    clip_num_tiles_hit,
-                    # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
-                    # clip_hash_encoding[self.dropout_mask],
-                    clip_hash_encoding,
-                    torch.sigmoid(opacities_crop.detach().clone()),
-                    clip_H,
-                    clip_W,
-                    torch.zeros(clip_hash_encoding.shape[1], device=self.device),
-                )
-                field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
-                clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
-                # dino_output = field_output[GaussianLERFFieldHeadNames.DINO].to(dtype=torch.float32)
-
-                # import pdb; pdb.set_trace()
-                outputs["clip"] = clip_output
-                outputs["clip_scale"] = clip_scale
-            # outputs["dino"] = dino_output
-        if not self.training:
+                    # import pdb; pdb.set_trace()
+                    outputs["clip"] = clip_output
+                    outputs["clip_scale"] = clip_scale
+                    # outputs["dino"] = dino_output
+                if not self.training:
                     # N x B x 1; N
                     max_across, self.best_scales = self.get_max_across(
                         self.xys,
@@ -795,10 +1011,9 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                         outputs[f"relevancy_{i}"] = max_across[i].view(H, W, -1)
                         # outputs[f"relevancy_rasterized_{i}"] = relevancy_rasterized.view(H, W, -1)
                         # outputs[f"best_scales_{i}"] = best_scales[i]
-
+                
         return outputs
     
-    # @profile
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
 
@@ -806,26 +1021,25 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
             outputs: the output to compute loss dict to
             batch: ground truth batch corresponding to outputs
         """
-        # d = self._get_downscale_factor()
-        # import pdb; pdb.set_trace()
+        d = self._get_downscale_factor()
+        if d > 1:
+            # use torchvision to resize
+            import torchvision.transforms.functional as TF
 
-        # if d > 1:
-        #     newsize = [batch["image"].shape[0] // d, batch["image"].shape[1] // d]
-        #     gt_img = TF.resize(batch["image"].permute(2, 0, 1), newsize, antialias=None).permute(1, 2, 0)
-        # else:
-        #     gt_img = batch["image"]
-        gt_img = batch["image"]
+            newsize = (batch["image"].shape[0] // d, batch["image"].shape[1] // d)
+            gt_img = TF.resize(batch["image"].permute(2, 0, 1), newsize).permute(1, 2, 0)
+        else:
+            gt_img = batch["image"]
         metrics_dict = {}
         gt_rgb = gt_img.to(self.device)  # RGB or RGBA image
+        # gt_rgb = self.renderer_rgb.blend_background(gt_rgb)  # Blend if RGBA
         predicted_rgb = outputs["rgb"]
-        assert predicted_rgb.shape == gt_rgb.shape
         metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
-        metrics_dict["gaussian_count"] = self.num_points
+        metrics_dict['gaussian_count'] = self.num_points
         return metrics_dict
-    
-    # @profile
+
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         """Computes and returns the losses dict.
 
@@ -835,36 +1049,31 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
         loss_dict = {}
-        # d = self._get_downscale_factor()
-        # if d > 1:
-        #     newsize = [batch["image"].shape[0] // d, batch["image"].shape[1] // d]
-        #     gt_img = TF.resize(batch["image"].permute(2, 0, 1), newsize, antialias=None).permute(1, 2, 0)
-        # else:
-        #     gt_img = batch["image"]
-        gt_img = batch["image"]
-        Ll1 = torch.abs(gt_img - outputs["rgb"]).mean()
-        simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], outputs["rgb"].permute(2, 0, 1)[None, ...])
-        if self.step % 10 == 0:
-            # Before, we made split sh and colors onto different optimizer, with shs having a low learning rate
-            # This is slow, instead we apply a regularization every few steps
-            sh_reg = self.colors_all[:, 1:, :].norm(dim=1).mean()
-            scale_exp = torch.exp(self.scales)
-            scale_reg = torch.maximum(scale_exp.amax(dim=-1) / scale_exp.amin(dim=-1), torch.tensor(self.config.max_gauss_ratio)) - self.config.max_gauss_ratio
-            scale_reg = 0.1 * scale_reg.mean()
+        d = self._get_downscale_factor()
+        if d > 1:
+            # use torchvision to resize
+            import torchvision.transforms.functional as TF
+
+            newsize = (batch["image"].shape[0] // d, batch["image"].shape[1] // d)
+            gt_img = TF.resize(batch["image"].permute(2, 0, 1), newsize).permute(1, 2, 0)
         else:
-            sh_reg = torch.tensor(0.0).to(self.device)
-            scale_reg = torch.tensor(0.0).to(self.device)
-        loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss
-        loss_dict["sh_reg"] = sh_reg
-        loss_dict['scale_reg'] = scale_reg
-        
+            gt_img = batch['image']
+        Ll1 = torch.abs(gt_img- outputs['rgb']).mean()
+        simloss = (1-self.ssim(gt_img.permute(2,0,1)[None,...], outputs['rgb'].permute(2,0,1)[None,...]))
+        loss_dict["main_loss"] = (1-self.config.ssim_lambda)*Ll1 + self.config.ssim_lambda*simloss
+
         if self.training and 'clip' in outputs: 
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
-                outputs["clip"], batch["clip"].to(torch.float32).to(self.device), delta=1.25, reduction="none"
+                outputs["clip"], batch["clip"].to(torch.float32), delta=1.25, reduction="none"
             )
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
+            
+        if self.training and 'dino' in outputs:
+            unreduced_dino = torch.nn.functional.mse_loss(outputs["dino"], batch["dino"], reduction="none")
+            loss_dict["dino_loss"] = unreduced_dino.sum(dim=-1).nanmean()
 
         return loss_dict
+
     
     def crop_to_word_cb(self,element):
         with torch.no_grad():
