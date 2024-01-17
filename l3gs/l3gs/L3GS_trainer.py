@@ -636,7 +636,9 @@ class Trainer:
                     # we don't want to add the image to the dataset unless we are sure.
                     if self.calculate_diff:
                         # TODO: Kishore and Justin
-                        raise NotImplementedError
+                        image, depth, pose = self.add_img_callback(msg, decode_only=True)
+                        self.query_diff_msg_queue.append(msg)
+                        self.query_diff_queue.append([image, depth, pose])
                     else:
                         self.add_img_callback(msg)
                         self.image_process_queue.append(msg)
@@ -730,6 +732,21 @@ class Trainer:
 
                 with self.train_lock:
                     #TODO add the image diff stuff here
+                    if self.calculate_diff and len(self.query_diff_queue) > self.query_diff_size and image is not None:
+                        self.pipeline.eval()
+                        heat_map_masks, gsplat_outputs_list, poses = [], [], []
+                        for _ in range(self.query_diff_queue):
+                            image, depth, pose = self.query_diff_queue.pop(0)
+                            heat_map, gsplat_outputs = self.pipeline.query_diff(image, pose, depth, vis_verbose = self.pipeline.plot_verbose.value)
+                            if self.pipeline.use_clip:
+                                heat_map_mask = heat_map > -0.85
+                            else:
+                                heat_map_mask = heat_map
+
+                            heat_map_masks.append(heat_map_mask)
+                            gsplat_outputs_list.append(gsplat_outputs)
+                            poses.append(pose)
+
                     #######################################
                     # Normal training loop
                     #######################################

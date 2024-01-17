@@ -1,6 +1,8 @@
+from pathlib import Path
 import typing
 from dataclasses import dataclass, field
 from typing import Literal, Type, Optional
+from l3gs.l3gs.data.utils.patch_embedding_dataloader import PatchEmbeddingDataloader
 
 import torch.distributed as dist
 from torch.cuda.amp.grad_scaler import GradScaler
@@ -82,6 +84,41 @@ def SH2RGB(sh):
     C0 = 0.28209479177387814
     return sh * C0 + 0.5
 
+def get_clip_patchloader(image, pipeline, image_scale):
+    clip_cache_path = Path("dummy_cache2.npy")
+    import time
+    model_name = str(time.time())
+    image = image.permute(2,0,1)[None,...]
+    patchloader = PatchEmbeddingDataloader(
+        cfg={
+            "tile_ratio": image_scale,
+            "stride_ratio": .25,
+            "image_shape": list(image.shape[2:4]),
+            "model_name": model_name,
+        },
+        device='cuda:0',
+        model=pipeline.image_encoder,
+        image_list=image,
+        cache_path=clip_cache_path,
+    )
+    return patchloader
+
+def get_grid_embeds_patch(patchloader, rn, cn, im_h, im_w, img_scale):
+    "create points, which is a meshgrid of x and y coordinates, with a z coordinate of 1.0"
+    r_res = im_h // rn
+    c_res = im_w // cn
+    points = torch.stack(torch.meshgrid(torch.arange(0, im_h,r_res), torch.arange(0,im_w,c_res)), dim=-1).cuda().long()
+    points = torch.cat([torch.zeros((*points.shape[:-1],1),dtype=torch.int64,device='cuda'),points],dim=-1)
+    embeds = patchloader(points.view(-1,3))
+    return embeds, points
+
+def get_2d_embeds(image: torch.Tensor, scale: float, pipeline):
+    # pyramid = get_clip_pyramid(image,pipeline=pipeline,image_scale=scale)
+    # embeds,points = get_grid_embeds(pyramid,image.shape[0]//resolution,image.shape[1]//resolution,image.shape[0],image.shape[1],scale)
+    patchloader = get_clip_patchloader(image, pipeline=pipeline, image_scale=scale)
+    embeds, points = get_grid_embeds_patch(patchloader, image.shape[0] * scale,image.shape[1] * scale, image.shape[0], image.shape[1], scale)
+    return embeds, points
+
 @dataclass
 class L3GSPipelineConfig(VanillaPipelineConfig):
     """Configuration for pipeline instantiation"""
@@ -154,12 +191,12 @@ class L3GSPipeline(VanillaPipeline):
 
         # self.highres_downscale = highres_downscale
         
-        # self.use_rgb = use_rgb
-        # self.use_clip = use_clip 
-        # self.use_vit = use_vit
-        # self.use_depth = use_depth
+        self.use_rgb = use_rgb
+        self.use_clip = use_clip 
+        self.use_vit = use_vit
+        self.use_depth = use_depth
         # # only one of use rgb, use clip, and use depth can be true 
-        # assert (self.use_rgb + self.use_clip + self.use_depth + self.use_vit) == 1, "only one of use_rgb, use_clip, and use_depth can be true"
+        assert (self.use_rgb + self.use_clip + self.use_depth + self.use_vit) == 1, "only one of use_rgb, use_clip, and use_depth can be true"
         # self.model_name = model_name
         # # self.diff_checkbox = ViewerCheckbox("Calculate diff",False)
         
@@ -232,3 +269,57 @@ class L3GSPipeline(VanillaPipeline):
 
 
         return depth
+    
+
+    def query_diff(self, image: torch.Tensor, pose: Cameras, depth, vis_verbose: bool = False):
+        if self.use_clip:
+            heat_map, gsplat_outputs = self.query_diff_clip(image, pose)
+        elif self.use_rgb:
+            heat_map, gsplat_outputs = self.query_diff_rgb(image, pose)
+        return heat_map, gsplat_outputs
+    
+    def query_diff_clip(self, image: torch.Tensor, pose: Cameras, image_scale: float = 0.25, vis_verbose: bool = False):
+        gsplat_outputs = self.model.get_outputs(pose)
+        gsplat_clip_output = gsplat_outputs['clip']
+
+        rendered_image = gsplat_outputs['rgb']
+        rendered_embeds, rendered_points = get_2d_embeds(rendered_image, image_scale, self)
+
+        im_h, im_w, _ = image.shape
+        r_res, c_res = im_h * image_scale, im_w * image_scale
+        image_coords = torch.stack(torch.meshgrid(torch.arange(0, im_h, r_res), torch.arange(0,im_w,c_res)), dim=-1).cuda().long()
+        image_embeds, image_points = get_2d_embeds(image, image_scale, self)
+
+        shift = gsplat_clip_output - rendered_embeds
+        shifted_embeds = image_embeds + shift
+        shifted_embeds = shifted_embeds / shifted_embeds.norm(dim=-1, keepdim=True)
+        baselined_diff = -torch.einsum('ijk,ijk->ij', shifted_embeds, gsplat_clip_output)
+
+        if vis_verbose:
+            fig, axes = plt.subplots(1, 2)
+            axes[0].imshow(-torch.einsum('ijk,ijk->ij', rendered_embeds, gsplat_clip_output).detach().cpu().numpy())
+            axes[0].set_title("not-baselined diff")
+            axes[1].imshow(baselined_diff.detach().cpu().numpy())
+            axes[1].set_title("baselined diff")
+            plt.show()
+
+        return baselined_diff, gsplat_outputs
+
+
+
+    def query_diff_rgb(self, image: torch.Tensor, pose: Cameras, vis_verbose: bool = False, thres: float = 0.03):
+        gsplat_outputs = self.model.get_outputs(pose)
+        rgb_output = gsplat_outputs['rgb']
+
+        diff = torch.norm(rgb_output - image, dim=-1)
+        diff_bool = diff > thres
+
+        if vis_verbose:
+            fig, ax = plt.subplots(1, 4)
+            ax[0].imshow(image.detach().cpu().numpy())
+            ax[1].imshow(rgb_output.detach().cpu().numpy())
+            ax[2].imshow(diff.detach().cpu().numpy())
+            ax[3].imshow(diff_bool.detach().cpu().numpy())
+            plt.show()
+
+        return diff_bool, gsplat_outputs
