@@ -82,7 +82,7 @@ class L3GSDataManagerConfig(DataManagerConfig):
     """The stride scaler for patch-based training"""
     network: BaseImageEncoderConfig = BaseImageEncoderConfig()
     """specifies the vision-language network config"""
-    clip_downscale_factor: int = 4
+    clip_downscale_factor: int = 2
     """The downscale factor for the clip pyramid"""
 
 
@@ -444,7 +444,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         #Pick a random scale from min to max and then the clip features at that scale
         if self.use_clip:
-            if step - self.lerf_step > 2000:
+            if step - self.lerf_step > 500:
                 # print("Training CLIP")
                 H, W = data["image"].shape[:2]
                 scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
@@ -452,20 +452,20 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                 self.curr_scale = scale
                 scaled_height = H//self.config.clip_downscale_factor
                 scaled_width = W//self.config.clip_downscale_factor
-                # self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
+                self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
 
                 x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
                 y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
                 image_idx_tensor = torch.ones(scaled_height, scaled_width, 1)*image_idx
                 positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
-                # positions = positions[self.random_pixels]
+                positions = positions[self.random_pixels]
                 # import pdb; pdb.set_trace()
                 with torch.no_grad():
                     data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)[0], self.clip_interpolator(positions, scale)[1]
                     # data["dino"] = self.dino_dataloader(positions)
                 
                 camera.metadata["clip_downscale_factor"] = self.config.clip_downscale_factor
-            
+                # import matplotlib.pyplot as plt
         return camera, data
 
     def next_eval(self, step: int) -> Tuple[Cameras, Dict]:
