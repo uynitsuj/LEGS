@@ -877,11 +877,10 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
             scales_crop = self.scales
             quats_crop = self.quats
         if self.training:
+            self.xys.retain_grad()
             background = torch.rand(3, device=self.device)
         else:
             background = self.back_color
-        if self.training:
-            self.xys.retain_grad()
         if self.config.sh_degree > 0:
             viewdirs = means_crop.detach() - camera.camera_to_worlds.detach()[..., :3, 3]  # (N, 3)
             viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
@@ -1145,8 +1144,8 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                 outputs["clip"], batch["clip"].to(torch.float32), delta=1.25, reduction="none"
             )
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
-                                ## Debug ##
-
+            
+            ## Debug ##
             # if self.step - self.datamanager.lerf_step > 1000:
             #     import pdb; pdb.set_trace()
             
