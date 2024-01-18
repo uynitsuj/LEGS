@@ -674,7 +674,7 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<2):
+                elif not self.done_scale_calc and (len(parser_scale_list)<5):
                     time.sleep(0.01)
                     continue
 

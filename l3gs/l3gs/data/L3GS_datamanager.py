@@ -82,7 +82,7 @@ class L3GSDataManagerConfig(DataManagerConfig):
     """The stride scaler for patch-based training"""
     network: BaseImageEncoderConfig = BaseImageEncoderConfig()
     """specifies the vision-language network config"""
-    clip_downscale_factor: int = 2
+    clip_downscale_factor: int = 4
     """The downscale factor for the clip pyramid"""
 
 
@@ -461,7 +461,8 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                 positions = positions[self.random_pixels]
                 # import pdb; pdb.set_trace()
                 with torch.no_grad():
-                    data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)[0], self.clip_interpolator(positions, scale)[1]
+                    # data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)[0], self.clip_interpolator(positions, scale)[1]
+                    data["clip"], data["clip_scale"] = self.clip_interpolator(positions)[0], self.clip_interpolator(positions)[1]
                     # data["dino"] = self.dino_dataloader(positions)
                 
                 camera.metadata["clip_downscale_factor"] = self.config.clip_downscale_factor
@@ -540,16 +541,17 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
         # self.clip_interpolator.add_images(img.unsqueeze(0))
         # dino = dino.to(self.device)
-        if clip is not None: 
-            self.use_clip = True
-            for i, tr in enumerate(self.clip_interpolator.tile_sizes):
-                clip[i] = clip[i].to(self.device)
-                if self.clip_interpolator.data_dict[i].data is not None:
-                    self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
-                else:
-                    self.clip_interpolator.data_dict[i].data = clip[i]
-        else:
-            self.use_clip = False
+        # if clip is not None: 
+        #     self.use_clip = True
+        #     for i, tr in enumerate(self.clip_interpolator.tile_sizes):
+        #         clip[i] = clip[i].to(self.device)
+        #         if self.clip_interpolator.data_dict[i].data is not None:
+        #             self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
+        #         else:
+        #             self.clip_interpolator.data_dict[i].data = clip[i]
+            
+        # else:
+        #     self.use_clip = False
         # if self.dino_dataloader.data is None:
         #     self.dino_dataloader.data = dino
         # else:
@@ -568,6 +570,25 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                     self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
                 else:
                     self.clip_interpolator.data_dict[i].data = clip[i]
+            # self.clip_interpolator.data_dict[0].model.set_positives(["tissue"])
+            # scaled_height = 120
+            # scaled_width = 212
+            # x = torch.arange(0, scaled_width*4, 4).view(1, scaled_width,1).expand(scaled_height, scaled_width, 1)
+            # y = torch.arange(0, scaled_height*4, 4).view(scaled_height, 1, 1).expand(scaled_height,scaled_width,1)
+            # image_idx = 0
+            # image_idx_tensor = torch.ones(scaled_height, scaled_width, 1)*image_idx
+            # positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
+            # scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
+            # data = copy(self.cached_train[image_idx])
+            # data["clip"], data["clip_scale"] = self.clip_interpolator(positions)[0], self.clip_interpolator(positions)[1]
+            # probs = self.clip_interpolator.data_dict[0].model.get_relevancy(data["clip"].view(-1, self.clip_interpolator.data_dict[0].model.embedding_dim), 0)
+            # from nerfstudio.utils.colormaps import apply_colormap
+            # color = apply_colormap(probs[..., 0:1])
+            # color = color.reshape([120,212,3])
+            # import matplotlib.pyplot as plt
+            # plt.imshow(color.cpu().numpy())
+            # plt.savefig(f"relevancy_{self.clip_interpolator.data_dict[0].model.positives}.png")
+            # import pdb; pdb.set_trace()
         else:
             self.use_clip = False
 
