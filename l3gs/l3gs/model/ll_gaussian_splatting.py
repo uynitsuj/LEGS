@@ -131,7 +131,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """every n intervals turn on another sh degree"""
     cull_screen_size: float = 0.9
     """if a gaussian is more than this percent of screen space, cull it"""
-    split_screen_size: float = 0.025
+    split_screen_size: float = 0.01
     """if a gaussian is more than this percent of screen space, split it"""
     stop_screen_size_at: int = 4000
     """stop culling/splitting at this step WRT screen size of gaussians"""
@@ -139,7 +139,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """whether to initialize the positions uniformly randomly (not SFM points)"""
     ssim_lambda: float = 0.2
     """weight of ssim loss"""
-    stop_split_at: int = 15000
+    stop_split_at: int = 30000
     """stop splitting at this step"""
     sh_degree: int = 4
     """maximum degree of spherical harmonics to use"""
@@ -971,13 +971,18 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     self.random_pixels = self.datamanager.random_pixels.to(self.device)
 
                     ## Debug ##
-                    if self.step - self.datamanager.lerf_step > 2000:
+                    if self.step - self.datamanager.lerf_step > 1000:
                         import matplotlib.pyplot as plt
                         clip_rgb_out = RasterizeGaussians.apply(clip_xys,clip_depths,clip_radii,clip_conics,clip_num_tiles_hit,rgbs,torch.sigmoid(opacities_crop.detach().clone()),clip_H,clip_W,background)
                         plt.imshow(clip_rgb_out.detach().cpu().numpy())
                         plt.savefig(f"clip_view_rgb_out_{self.step}.png")
 
                         clip_scale = self.datamanager.curr_scale * torch.ones((25440,1),device=self.device)
+                        newsize = (depth_im.shape[0] // 4, depth_im.shape[1] // 4)
+                        # import pdb; pdb.set_trace()
+                        import torchvision.transforms.functional as TF
+                        depth_im_new = TF.resize(depth_im.permute(2, 0, 1), newsize).permute(1, 2, 0)
+                        clip_scale = clip_scale * clip_H * (depth_im_new.view(-1, 1) / camera.fy.item())
                         clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
                         field_output = NDRasterizeGaussians.apply(
                             clip_xys.detach(),
@@ -995,7 +1000,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                         )
                         field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1), clip_scale)
                         clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
-                        self.image_encoder.set_positives(["table"])
+                        self.image_encoder.set_positives(["tissue"])
                         probs = self.image_encoder.get_relevancy(clip_output.view(-1, self.image_encoder.embedding_dim), 0)
                         color = apply_colormap(probs[..., 0:1])
                         color = color.reshape([120,212,3])
@@ -1003,7 +1008,6 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                         #save plt
                         plt.savefig(f"relevancy_out_{self.step}_{self.image_encoder.positives}.png")
                         import pdb; pdb.set_trace()
-                    ## Debug ##
 
                     clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
                     clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
@@ -1048,6 +1052,9 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     # import pdb; pdb.set_trace()
                     outputs["clip"] = clip_output
                     outputs["clip_scale"] = clip_scale
+                    ## Debug ##
+                    # if self.step - self.datamanager.lerf_step > 1000:
+                    #     import pdb; pdb.set_trace()
                     # outputs["dino"] = dino_output
                 if not self.training:
                     # N x B x 1; N
@@ -1120,23 +1127,28 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         loss_dict["main_loss"] = (1-self.config.ssim_lambda)*Ll1 + self.config.ssim_lambda*simloss
 
         if self.training and 'clip' in outputs: 
-            # import matplotlib.pyplot as plt
-            # import pdb; pdb.set_trace()
+            if self.step - self.datamanager.lerf_step > 1000:
+                import matplotlib.pyplot as plt
+                # import pdb; pdb.set_trace()
 
-            # self.image_encoder.set_positives(["table"])
-            # probs = self.image_encoder.get_relevancy(batch["clip"].view(-1, self.image_encoder.embedding_dim), 0)
-            # color = apply_colormap(probs[..., 0:1])
-            # color = color.reshape([120,212,3])
-            # #visualize the relevancy with plt
-            # plt.imshow(color.cpu().numpy())
-            # #save plt
-            # plt.savefig(f"relevancy_{self.step}_{self.image_encoder.positives}.png")
-            # import pdb; pdb.set_trace()
+                self.image_encoder.set_positives(["table"])
+                probs = self.image_encoder.get_relevancy(batch["clip"].view(-1, self.image_encoder.embedding_dim), 0)
+                color = apply_colormap(probs[..., 0:1])
+                color = color.reshape([120,212,3])
+                #visualize the relevancy with plt
+                plt.imshow(color.cpu().numpy())
+                #save plt
+                plt.savefig(f"relevancy_{self.step}_{self.image_encoder.positives}.png")
+                import pdb; pdb.set_trace()
 
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
                 outputs["clip"], batch["clip"].to(torch.float32), delta=1.25, reduction="none"
             )
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
+                                ## Debug ##
+
+            # if self.step - self.datamanager.lerf_step > 1000:
+            #     import pdb; pdb.set_trace()
             
         if self.training and 'dino' in outputs:
             unreduced_dino = torch.nn.functional.mse_loss(outputs["dino"], batch["dino"], reduction="none")

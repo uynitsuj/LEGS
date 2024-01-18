@@ -458,12 +458,20 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                 y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
                 image_idx_tensor = torch.ones(scaled_height, scaled_width, 1)*image_idx
                 positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
+
+                # data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)
+                # image_encoder = self.clip_interpolator.data_dict[0].model
+                # image_encoder.set_positives("white")  # some generic color that would be easy to identify...?
+                # import matplotlib.pyplot as plt
+                # plt.imsave("foo.png", image_encoder.get_relevancy(data['clip'], 0)[:, 0].view(scaled_height, scaled_width).detach().cpu().numpy())
+
                 positions = positions[self.random_pixels]
                 # import pdb; pdb.set_trace()
                 with torch.no_grad():
-                    # data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale)[0], self.clip_interpolator(positions, scale)[1]
-                    data["clip"], data["clip_scale"] = self.clip_interpolator(positions)[0], self.clip_interpolator(positions)[1]
+                    data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale) # [0], self.clip_interpolator(positions, scale)[1]
+                    # data["clip"], data["clip_scale"] = self.clip_interpolator(positions)[0], self.clip_interpolator(positions)[1]
                     # data["dino"] = self.dino_dataloader(positions)
+                # import pdb; pdb.set_trace()
                 
                 camera.metadata["clip_downscale_factor"] = self.config.clip_downscale_factor
                 # import matplotlib.pyplot as plt

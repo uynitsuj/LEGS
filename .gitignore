@@ -8,6 +8,8 @@
 
 *.model
 
+*.png
+
 outputs/unnamed/
 outputs/*
 l3gs/build/*
