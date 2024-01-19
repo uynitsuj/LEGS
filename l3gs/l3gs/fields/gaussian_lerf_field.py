@@ -38,7 +38,7 @@ from nerfstudio.field_components.field_heads import (
     UncertaintyFieldHead,
 )
 from nerfstudio.field_components.mlp import MLP
-from nerfstudio.field_components.spatial_distortions import SpatialDistortion
+from nerfstudio.field_components.spatial_distortions import SpatialDistortion, SceneContraction
 from nerfstudio.fields.base_field import Field, get_normalized_directions
 
 try:
@@ -91,6 +91,8 @@ class GaussianLERFField(Field):
         feature_dims: int = 64,
     ) -> None:
         super().__init__()
+
+        self.spatial_distortion: SceneContraction = SceneContraction()
 
         self.register_buffer("max_res", torch.tensor(max_res))
         self.register_buffer("num_levels", torch.tensor(num_levels))
@@ -178,6 +180,9 @@ class GaussianLERFField(Field):
 
     def get_outputs(self, positions, clip_scales) -> Dict[GaussianLERFFieldHeadNames, Tensor]:
         # random scales, one scale
+        positions = self.spatial_distortion(positions)
+        positions = (positions + 2.0) / 4.0
+        
         outputs = {}
         xs = [e(positions.view(-1, 3)) for e in self.clip_encs]
         x = torch.concat(xs, dim=-1)
@@ -196,6 +201,9 @@ class GaussianLERFField(Field):
         return outputs
 
     def get_hash(self, positions) -> Tensor:
+        positions = self.spatial_distortion(positions)
+        positions = (positions + 2.0) / 4.0
+
         encodings = [e(positions.view(-1, 3)) for e in self.clip_encs]
         encoding = torch.concat(encodings, dim=-1)
         return encoding.to(torch.float32)
