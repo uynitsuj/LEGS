@@ -53,6 +53,8 @@ import numpy as np
 import cv2
 import math
 
+import L3GS_utils.Utils as U
+
 def random_quat_tensor(N):
     """
     Defines a random quaternion tensor of shape (N, 4)
@@ -323,3 +325,20 @@ class L3GSPipeline(VanillaPipeline):
             plt.show()
 
         return diff_bool, gsplat_outputs
+    
+    def heatmaps2gaussians(self, heatmap_masks, gsplat_outputs, poses, depths, images):
+        # look at depth where heatmap is activated, find corresponding gaussians?
+        #   then how to mask out volumes? do we replace all affected gaussians?
+        
+        assert len(heatmap_masks) == len(depths) == len(poses), "length must be equal"
+        distance_thresh = 0.03
+        affected_gaussians = []
+
+        for hm, go, p, d, im in enumerate(heatmap_masks, gsplat_outputs, poses, depths, images):
+            masked_depth = d & hm
+            deprojected, _ = U.deproject_to_RGB_point_cloud(im, masked_depth, p, self.datamanager.train_dataparser_outputs.dataparser_scale)
+            to_flag = torch.where(torch.abs(self.means - deprojected) < distance_thresh)
+            flagged = self.means[to_flag] # flags all gaussian means that are close to deprojected points
+            affected_gaussians.append(flagged)
+        
+        return affected_gaussians
