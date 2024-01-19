@@ -1013,7 +1013,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     # print("Current scale: ", self.datamanager.curr_scale, "Clip scale mean: ", clip_scale.mean(), "Clip scale max: ", clip_scale.max(), "Clip scale min: ", clip_scale.min())
                     # import pdb; pdb.set_trace()
                     clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
-                    import pdb; pdb.set_trace()
+                    # import pdb; pdb.set_trace()
                     field_output = NDRasterizeGaussians.apply(
                         clip_xys.detach(),
                         clip_depths.detach(),
