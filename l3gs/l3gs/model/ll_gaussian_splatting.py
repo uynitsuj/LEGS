@@ -121,9 +121,9 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """threshold of scale for culling gaussians"""
     reset_alpha_every: int = 60
     """Every this many refinement steps, reset the alpha"""
-    densify_grad_thresh: float = 0.0001
+    densify_grad_thresh: float = 0.00005
     """threshold of positional gradient norm for densifying gaussians"""
-    densify_size_thresh: float = 0.01
+    densify_size_thresh: float = 0.005
     """below this size, gaussians are *duplicated*, otherwise split"""
     n_split_samples: int = 2
     """number of samples to split gaussians into"""
@@ -131,7 +131,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """every n intervals turn on another sh degree"""
     cull_screen_size: float = 0.9
     """if a gaussian is more than this percent of screen space, cull it"""
-    split_screen_size: float = 0.01
+    split_screen_size: float = 0.005
     """if a gaussian is more than this percent of screen space, split it"""
     stop_screen_size_at: int = 4000
     """stop culling/splitting at this step WRT screen size of gaussians"""
@@ -963,57 +963,57 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     # return outputs
                     with torch.no_grad():
                         clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
-                    # clip_H = H//camera.metadata["clip_downscale_factor"]
-                    # clip_W = W//camera.metadata["clip_downscale_factor"]
-                    #Very messy will fix to get it from camera metadata
-                    # import pdb; pdb.set_trace()
-                    self.random_pixels = self.datamanager.random_pixels.to(self.device)
+                        # clip_H = H//camera.metadata["clip_downscale_factor"]
+                        # clip_W = W//camera.metadata["clip_downscale_factor"]
+                        #Very messy will fix to get it from camera metadata
+                        # import pdb; pdb.set_trace()
+                        self.random_pixels = self.datamanager.random_pixels.to(self.device)
 
                     ## Debug ##
-                    if self.step - self.datamanager.lerf_step > 1000:
-                        import matplotlib.pyplot as plt
-                        clip_rgb_out = RasterizeGaussians.apply(clip_xys,clip_depths,clip_radii,clip_conics,clip_num_tiles_hit,rgbs,torch.sigmoid(opacities_crop.detach().clone()),clip_H,clip_W,background)
-                        plt.imshow(clip_rgb_out.detach().cpu().numpy())
-                        plt.savefig(f"clip_view_rgb_out_{self.step}.png")
+                    # if self.step - self.datamanager.lerf_step > 500:
+                    #     import matplotlib.pyplot as plt
+                    #     clip_rgb_out = RasterizeGaussians.apply(clip_xys,clip_depths,clip_radii,clip_conics,clip_num_tiles_hit,rgbs,torch.sigmoid(opacities_crop.detach().clone()),clip_H,clip_W,background)
+                    #     plt.imshow(clip_rgb_out.detach().cpu().numpy())
+                    #     plt.savefig(f"clip_view_rgb_out_{self.step}.png")
 
-                        clip_scale = self.datamanager.curr_scale * torch.ones((25440,1),device=self.device)
-                        newsize = (depth_im.shape[0] // 4, depth_im.shape[1] // 4)
+                    #     clip_scale = self.datamanager.curr_scale * torch.ones((25440,1),device=self.device)
+                    #     newsize = (depth_im.shape[0] // 4, depth_im.shape[1] // 4)
+                    #     # import pdb; pdb.set_trace()
+                    #     import torchvision.transforms.functional as TF
+                    #     depth_im_new = TF.resize(depth_im.permute(2, 0, 1), newsize).permute(1, 2, 0)
+                    #     clip_scale = clip_scale * clip_H * (depth_im_new.view(-1, 1) / camera.fy.item())
+                    #     clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+                    #     field_output = NDRasterizeGaussians.apply(
+                    #         clip_xys.detach(),
+                    #         clip_depths.detach(),
+                    #         clip_radii.detach(),
+                    #         clip_conics.detach(),
+                    #         clip_num_tiles_hit,
+                    #         # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
+                    #         # clip_hash_encoding[self.dropout_mask],
+                    #         clip_hash_encoding,
+                    #         torch.sigmoid(opacities_crop.detach().clone()),
+                    #         clip_H,
+                    #         clip_W,
+                    #         torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                    #     )
+                        # field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1), clip_scale)
+                        # clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+                        # self.image_encoder.set_positives(["tissue"])
+                        # probs = self.image_encoder.get_relevancy(clip_output.view(-1, self.image_encoder.embedding_dim), 0)
+                        # color = apply_colormap(probs[..., 0:1])
+                        # color = color.reshape([120,212,3])
+                        # plt.imshow(color.cpu().numpy())
+                        # #save plt
+                        # plt.savefig(f"relevancy_out_{self.step}_{self.image_encoder.positives}.png")
                         # import pdb; pdb.set_trace()
-                        import torchvision.transforms.functional as TF
-                        depth_im_new = TF.resize(depth_im.permute(2, 0, 1), newsize).permute(1, 2, 0)
-                        clip_scale = clip_scale * clip_H * (depth_im_new.view(-1, 1) / camera.fy.item())
-                        clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
-                        field_output = NDRasterizeGaussians.apply(
-                            clip_xys.detach(),
-                            clip_depths.detach(),
-                            clip_radii.detach(),
-                            clip_conics.detach(),
-                            clip_num_tiles_hit,
-                            # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
-                            # clip_hash_encoding[self.dropout_mask],
-                            clip_hash_encoding,
-                            torch.sigmoid(opacities_crop.detach().clone()),
-                            clip_H,
-                            clip_W,
-                            torch.zeros(clip_hash_encoding.shape[1], device=self.device),
-                        )
-                        field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1), clip_scale)
-                        clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
-                        self.image_encoder.set_positives(["tissue"])
-                        probs = self.image_encoder.get_relevancy(clip_output.view(-1, self.image_encoder.embedding_dim), 0)
-                        color = apply_colormap(probs[..., 0:1])
-                        color = color.reshape([120,212,3])
-                        plt.imshow(color.cpu().numpy())
-                        #save plt
-                        plt.savefig(f"relevancy_out_{self.step}_{self.image_encoder.positives}.png")
-                        import pdb; pdb.set_trace()
 
                     clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
                     clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
                     # print("Current scale: ", self.datamanager.curr_scale, "Clip scale mean: ", clip_scale.mean(), "Clip scale max: ", clip_scale.max(), "Clip scale min: ", clip_scale.min())
                     # import pdb; pdb.set_trace()
                     clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
-
+                    import pdb; pdb.set_trace()
                     field_output = NDRasterizeGaussians.apply(
                         clip_xys.detach(),
                         clip_depths.detach(),
@@ -1044,13 +1044,19 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     # )
                     # Normalize the clip output
                     # clip_output = clip_output / (clip_output.norm(dim=-1, keepdim=True) + 1e-6)
+                    
+                    # import pdb; pdb.set_trace()
+                    # print('before get_outputs_from_feature:', field_output, field_output.shape)    
+                    # clip_scale = torch.ones_like(clip_scale)/2
                     field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
+                    # print('after:', field_output)
                     clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
                     # dino_output = field_output[GaussianLERFFieldHeadNames.DINO].to(dtype=torch.float32)
 
                     # import pdb; pdb.set_trace()
                     outputs["clip"] = clip_output
                     outputs["clip_scale"] = clip_scale
+                    # import pdb; pdb.set_trace()
                     ## Debug ##
                     # if self.step - self.datamanager.lerf_step > 1000:
                     #     import pdb; pdb.set_trace()
@@ -1126,19 +1132,19 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         loss_dict["main_loss"] = (1-self.config.ssim_lambda)*Ll1 + self.config.ssim_lambda*simloss
 
         if self.training and 'clip' in outputs: 
-            if self.step - self.datamanager.lerf_step > 1000:
-                import matplotlib.pyplot as plt
-                # import pdb; pdb.set_trace()
+            # if self.step - self.datamanager.lerf_step > 1000:
+            #     import matplotlib.pyplot as plt
+            #     # import pdb; pdb.set_trace()
 
-                self.image_encoder.set_positives(["table"])
-                probs = self.image_encoder.get_relevancy(batch["clip"].view(-1, self.image_encoder.embedding_dim), 0)
-                color = apply_colormap(probs[..., 0:1])
-                color = color.reshape([120,212,3])
-                #visualize the relevancy with plt
-                plt.imshow(color.cpu().numpy())
-                #save plt
-                plt.savefig(f"relevancy_{self.step}_{self.image_encoder.positives}.png")
-                import pdb; pdb.set_trace()
+            #     self.image_encoder.set_positives(["table"])
+            #     probs = self.image_encoder.get_relevancy(batch["clip"].view(-1, self.image_encoder.embedding_dim), 0)
+            #     color = apply_colormap(probs[..., 0:1])
+            #     color = color.reshape([120,212,3])
+            #     #visualize the relevancy with plt
+            #     plt.imshow(color.cpu().numpy())
+            #     #save plt
+            #     plt.savefig(f"relevancy_{self.step}_{self.image_encoder.positives}.png")
+            #     import pdb; pdb.set_trace()
 
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
                 outputs["clip"], batch["clip"].to(torch.float32), delta=1.25, reduction="none"
