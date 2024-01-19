@@ -621,7 +621,7 @@ class Trainer:
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
             step = 0
-            num_add = 4
+            num_add = 8
             self.imgidx = 0
             
             while True:
