@@ -180,7 +180,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         distances, _ = self.k_nearest_sklearn(self.means.data, 3)
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)
+        avg_dist = distances.mean(dim=-1, keepdim=True)/6
         self.scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
         self.quats = torch.nn.Parameter(random_quat_tensor(self.num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
@@ -356,6 +356,8 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                 # new_gaussian_params = [new_means, new_scales, new_quats, new_colors_all, new_opacities]
                 param_groups = self.get_gaussian_param_groups()
                 for group, param in param_groups.items():
+                    if group == 'lerf':
+                        continue
                     # import pdb; pdb.set_trace()
                     new_param = [param[0][-num_new_points:]]
                     self.add_new_params_to_optimizer(optimizers.optimizers[group], new_param)
@@ -441,11 +443,15 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     split_idcs = torch.where(splits)[0]
                     param_groups = self.get_gaussian_param_groups()
                     for group, param in param_groups.items():
+                        if group == 'lerf':
+                            continue
                         self.dup_in_optim(optimizers.optimizers[group], split_idcs, param, n=nsamps)
                     dup_idcs = torch.where(dups)[0]
 
                     param_groups = self.get_gaussian_param_groups()
                     for group, param in param_groups.items():
+                        if group == 'lerf':
+                            continue
                         self.dup_in_optim(optimizers.optimizers[group], dup_idcs, param, 1)
 
                 # Offset all the opacity reset logic by refine_every so that we don't
@@ -455,6 +461,8 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     deleted_mask = self.cull_gaussians()
                     param_groups = self.get_gaussian_param_groups()
                     for group, param in param_groups.items():
+                        if group == 'lerf':
+                            continue
                         self.remove_from_optim(optimizers.optimizers[group], deleted_mask, param)
 
                 if self.steps_since_add % reset_interval == self.config.refine_every:
@@ -531,6 +539,16 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         )
         return cbs
 
+    def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
+        return {
+            "xyz": [self.means],
+            "color": [self.colors_all],
+            "opacity": [self.opacities],
+            "scaling": [self.scales],
+            "rotation": [self.quats],
+            "lerf" : list(self.gaussian_lerf_field.parameters())
+        }
+    
     def _get_downscale_factor(self):
         # if self.training:
         #     return 2 ** max((self.config.num_downscales - self.step // self.config.resolution_schedule), 0)
@@ -970,7 +988,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                         self.random_pixels = self.datamanager.random_pixels.to(self.device)
 
                     ## Debug ##
-                    # if self.step - self.datamanager.lerf_step > 500:
+                    # if self.step - self.datamanager.lerf_step > 1000 and self.step % 100 == 0:
                     #     import matplotlib.pyplot as plt
                     #     clip_rgb_out = RasterizeGaussians.apply(clip_xys,clip_depths,clip_radii,clip_conics,clip_num_tiles_hit,rgbs,torch.sigmoid(opacities_crop.detach().clone()),clip_H,clip_W,background)
                     #     plt.imshow(clip_rgb_out.detach().cpu().numpy())
@@ -997,21 +1015,22 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
                     #         clip_W,
                     #         torch.zeros(clip_hash_encoding.shape[1], device=self.device),
                     #     )
-                        # field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1), clip_scale)
-                        # clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
-                        # self.image_encoder.set_positives(["tissue"])
-                        # probs = self.image_encoder.get_relevancy(clip_output.view(-1, self.image_encoder.embedding_dim), 0)
-                        # color = apply_colormap(probs[..., 0:1])
-                        # color = color.reshape([120,212,3])
-                        # plt.imshow(color.cpu().numpy())
-                        # #save plt
-                        # plt.savefig(f"relevancy_out_{self.step}_{self.image_encoder.positives}.png")
-                        # import pdb; pdb.set_trace()
+                    #     field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1), clip_scale)
+                    #     clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+                    #     self.image_encoder.set_positives(["green"])
+                    #     probs = self.image_encoder.get_relevancy(clip_output.view(-1, self.image_encoder.embedding_dim), 0)
+                    #     color = apply_colormap(probs[..., 0:1])
+                    #     color = color.reshape([120,212,3])
+                    #     plt.imshow(color.cpu().numpy())
+                    #     #save plt
+                    #     plt.savefig(f"relevancy_out_{self.step}_{self.image_encoder.positives}.png")
+                    #     import pdb; pdb.set_trace()
 
                     clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
                     clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
                     # print("Current scale: ", self.datamanager.curr_scale, "Clip scale mean: ", clip_scale.mean(), "Clip scale max: ", clip_scale.max(), "Clip scale min: ", clip_scale.min())
-                    # import pdb; pdb.set_trace()
+                    # if self.step - self.datamanager.lerf_step > 500:
+                    #     import pdb; pdb.set_trace()
                     clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
                     # import pdb; pdb.set_trace()
                     field_output = NDRasterizeGaussians.apply(

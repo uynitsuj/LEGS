@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Dict, List, Literal, Optional, Tuple, Type, cast, Dict, DefaultDict
 from collections import defaultdict, deque
 import viser.transforms as vtf
+import viser
 import torch
 import torchvision
 from rich import box, style
@@ -471,12 +472,18 @@ class Trainer:
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale=0.5,
+                    scale=1,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
-                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
+                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO # SCALE,
                 )
+        
+        @camera_handle.on_click
+        def _(event: viser.SceneNodePointerEvent[viser.CameraFrustumHandle]) -> None:
+            with event.client.atomic():
+                event.client.camera.position = event.target.position
+                event.client.camera.wxyz = event.target.wxyz
         self.viewer_state.camera_handles[cidx] = camera_handle
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 4
@@ -696,7 +703,7 @@ class Trainer:
                     )
                     scale_factor = 1.0
                     scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
-                    # print(scale_factor)
+                    print(scale_factor)
                     self.pipeline.datamanager.train_dataset._dataparser_outputs.dataparser_transform = transform_matrix
                     self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform = transform_matrix
                     self.pipeline.datamanager.train_dataset._dataparser_outputs.dataparser_scale = scale_factor
@@ -710,7 +717,7 @@ class Trainer:
                         c2w = C.camera_to_worlds[idx,...]
                         row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=c2w.device)
                         c2w= torch.matmul(torch.cat([H,row]),torch.cat([c2w,row]))[:3,:]
-                        c2w[:3,3] *= scale #* VISER_NERFSTUDIO_SCALE_RATIO
+                        c2w[:3,3] *= scale  #* VISER_NERFSTUDIO_SCALE_RATIO
                         C.camera_to_worlds[idx,...] = c2w
 
                         R = vtf.SO3.from_matrix(c2w[:3, :3])
@@ -750,8 +757,11 @@ class Trainer:
                         # add deprojected gaussians from monocular depth
                         expain = []
                         for group, _ in self.pipeline.model.get_gaussian_param_groups().items():
+                            if group == 'lerf':
+                                continue
                             expain.append("exp_avg" in self.optimizers.optimizers[group].state[self.optimizers.optimizers[group].param_groups[0]["params"][0]].keys())
                         if all(expain):
+                            # print("Adding deprojected gaussians")
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
                         
@@ -795,8 +805,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                if step_check(step, self.config.steps_per_save):
-                    self.save_checkpoint(step)
+                # if step_check(step, self.config.steps_per_save):
+                #     self.save_checkpoint(step)
 
                 writer.write_out_storage()
 
