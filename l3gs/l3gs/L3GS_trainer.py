@@ -472,7 +472,7 @@ class Trainer:
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale=1,
+                    scale=0.75,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,

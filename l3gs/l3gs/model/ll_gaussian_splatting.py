@@ -36,7 +36,7 @@ from nerfstudio.engine.optimizers import Optimizers
 # from nerfstudio.models.base_model import Model, ModelConfig
 import math
 import numpy as np
-# from sklearn.neighbors import NearestNeighbors
+from sklearn.neighbors import NearestNeighbors
 import viser.transforms as vtf
 # from nerfstudio.model_components.losses import scale_gauss_gradients_by_distance_squared
 from nerfstudio.viewer_beta.viewer_elements import ViewerButton, ViewerSlider, ViewerControl, ViewerVec3
@@ -1180,6 +1180,25 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
 
         return loss_dict
 
+    def k_nearest_sklearn(self, x: torch.Tensor, k: int, include_self: bool = False):
+        """
+        Find k-nearest neighbors using sklearn's NearestNeighbors.
+        x: The data tensor of shape [num_samples, num_features]
+        k: The number of neighbors to retrieve
+        """
+        # Convert tensor to numpy array
+        x_np = x.cpu().numpy()
+
+        # Build the nearest neighbors model
+        nn_model = NearestNeighbors(n_neighbors=k + 1, algorithm="auto", metric="euclidean").fit(x_np)
+
+        # Find the k-nearest neighbors
+        distances, indices = nn_model.kneighbors(x_np)
+
+        if include_self:
+            return distances.astype(np.float32), indices
+        else:
+            return distances[:, 1:].astype(np.float32), indices[:, 1:].astype(np.float32)
     
     def crop_to_word_cb(self,element):
         with torch.no_grad():
