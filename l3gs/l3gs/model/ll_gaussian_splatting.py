@@ -123,7 +123,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """Every this many refinement steps, reset the alpha"""
     densify_grad_thresh: float = 0.00005
     """threshold of positional gradient norm for densifying gaussians"""
-    densify_size_thresh: float = 0.005
+    densify_size_thresh: float = 0.01
     """below this size, gaussians are *duplicated*, otherwise split"""
     n_split_samples: int = 2
     """number of samples to split gaussians into"""
@@ -131,7 +131,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """every n intervals turn on another sh degree"""
     cull_screen_size: float = 0.9
     """if a gaussian is more than this percent of screen space, cull it"""
-    split_screen_size: float = 0.005
+    split_screen_size: float = 0.0009
     """if a gaussian is more than this percent of screen space, split it"""
     stop_screen_size_at: int = 4000
     """stop culling/splitting at this step WRT screen size of gaussians"""
@@ -139,7 +139,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """whether to initialize the positions uniformly randomly (not SFM points)"""
     ssim_lambda: float = 0.2
     """weight of ssim loss"""
-    stop_split_at: int = 30000
+    stop_split_at: int = 50000
     """stop splitting at this step"""
     sh_degree: int = 4
     """maximum degree of spherical harmonics to use"""
@@ -1166,7 +1166,7 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
             #     import pdb; pdb.set_trace()
 
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
-                outputs["clip"], batch["clip"].to(torch.float32), delta=1.25, reduction="none"
+                outputs["clip"], batch["clip"].to(self.device).to(torch.float32), delta=1.25, reduction="none"
             )
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
             
