@@ -183,7 +183,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
             # network=self.network,
         )
         self.clip_interpolator.start()
-        self.clip_interpolator.device = 'cuda:0' #??
+        self.clip_interpolator.device = 'cuda:1' #??
         self.clip_interpolator.create(None, self.network.setup())
 
         self.curr_scale = None

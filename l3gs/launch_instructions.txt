@@ -1,0 +1,5 @@
+cd into this directory
+conda deactivate (repeat until no (base))
+python -m pip install .
+source ~/ros2_ws/install/setup.bash
+ns-train l3gs
