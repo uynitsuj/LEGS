@@ -499,6 +499,9 @@ class Trainer:
         if self.done_scale_calc and msg.depth is not None and idx % project_interval == 0:
             depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
             depth = depth.unsqueeze(0).unsqueeze(0)
+            if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
+                import torch.nn.functional as F
+                depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
             self.deprojected_queue.extend(deprojected)
             self.colors_queue.extend(colors)
@@ -696,7 +699,7 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<5):
+                elif not self.done_scale_calc and (len(parser_scale_list)<20):
                     time.sleep(0.01)
                     continue
 
