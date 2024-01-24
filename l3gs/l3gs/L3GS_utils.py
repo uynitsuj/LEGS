@@ -2,7 +2,7 @@ import torch
 
 class Utils:
     # @profile
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, scale, num_samples = 250, device = 'cuda:0'):
+    def deproject_to_RGB_point_cloud(image, depth_image, camera, scale, num_samples = 250, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -12,6 +12,8 @@ class Utils:
         # depth_image = depth_image.cpu()
         # image = image.cpu()
         c2w = camera.camera_to_worlds.to(device)
+        if len(c2w.shape) == 3:
+            c2w = c2w.squeeze(0)
         depth_image = depth_image.to(device)
         image = image.to(device)
         fx = camera.fx.item()

@@ -848,7 +848,6 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         camera_downscale = self._get_downscale_factor()
         self.xys, depths, self.radii, conics, num_tiles_hit, cov3d, W, H = self.project_gaussians(camera, downscale_factor=camera_downscale)
 
-
         # if self.training:
         #     # currently relies on the branch vickie/camera-grads
         #     self.camera_optimizer.apply_to_camera(camera)

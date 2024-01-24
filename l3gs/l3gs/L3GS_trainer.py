@@ -49,7 +49,7 @@ from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
 
-import L3GS_utils.Utils as U
+from l3gs.L3GS_utils import Utils as U
 
 TORCH_DEVICE = str
 TRAIN_ITERATION_OUTPUT = Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]
@@ -136,7 +136,7 @@ class TrainerNode(Node):
         # self.subscription_ = self.create_subscription(ImagePose,"/sim_realsense",self.add_img_callback,100)
 
     def add_img_callback(self,msg):
-        print("Appending imagepose to queue",flush=True)
+        # print("Appending imagepose to queue",flush=True)
         self.trainer_.image_add_callback_queue.append(msg)
 
 
@@ -196,13 +196,13 @@ class Trainer:
         self.image_add_callback_queue = []
         self.image_process_queue = []
         self.query_diff_queue = []
-        self.query_diff_size = 5*3
+        self.query_diff_size = 1
         self.query_diff_msg_queue = []
         self.cvbridge = CvBridge()
         self.clip_out_queue = mp.Queue()
         self.dino_out_queue = mp.Queue()
         self.done_scale_calc = False
-        self.calculate_diff = False # whether or not to calculate the image diff
+        self.calculate_diff = True # whether or not to calculate the image diff
         self.calulate_metrics = False # whether or not to calculate the metrics
         self.num_boxes_added = 0
         self.box_viser_handles = []
@@ -381,6 +381,44 @@ class Trainer:
         # if not self.done_scale_calc:
         #     return None,None,None
         # return img_out, dep_out, retc
+
+    def process_query_diff(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
+        heatmap_masks, gsplat_outputs_list, poses, depths, images = [], [], [], [], []
+
+        camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+        image = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
+        image, depth = image.to(self.device), depth.to(self.device)
+        fx = torch.tensor([msg.fl_x])
+        fy = torch.tensor([msg.fl_y])
+        cy = torch.tensor([msg.cy])
+        cx = torch.tensor([msg.cx])
+        # cx = torch.tensor([msg.cy])
+        # cy = torch.tensor([msg.cx])
+        width = torch.tensor([msg.w])
+        height = torch.tensor([msg.h])
+        distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
+        camera_type = [CameraType.PERSPECTIVE]
+        pose = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+
+        heat_map, gsplat_outputs = self.pipeline.query_diff(image, pose, depth, step, vis_verbose = self.pipeline.plot_verbose)
+        # import pdb; pdb.set_trace()
+        if self.pipeline.use_clip:
+            heat_map_mask = heat_map > -0.85
+        else:
+            heat_map_mask = heat_map
+
+        heatmap_masks.append(heat_map_mask)
+        gsplat_outputs_list.append(gsplat_outputs)
+        poses.append(pose)
+        depths.append(depth)
+        images.append(image)
+
+        affected_gaussians = self.pipeline.heatmaps2gaussians(heatmap_masks, gsplat_outputs_list, poses, depths, images)
+        import pdb; pdb.set_trace()
+        if len(affected_gaussians) > 0:
+            # TODO: deal with the affected gaussians
+            pass
 
     
     # @profile
@@ -590,15 +628,14 @@ class Trainer:
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
-                    if self.calculate_diff:
+                    if step >= self.pipeline.model.config.warmup_length and self.calculate_diff:
                         # TODO: Kishore and Justin
-                        image, depth, pose = self.add_img_callback(msg, decode_only=True)
-                        self.query_diff_msg_queue.append(msg)
-                        self.query_diff_queue.append([image, depth, pose])
+                        self.query_diff_queue.append(msg)
                     else:
                         self.add_img_callback(msg)
                         self.image_process_queue.append(msg)
-                        self.imgidx += 1
+                    
+                    self.imgidx += 1
 
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
@@ -617,7 +654,7 @@ class Trainer:
                     # random_list.append(self.clip_out_queue.get())
                     # self.process_image(self.image_process_queue.pop(0), step)
                         
-
+                
                 while len(self.image_process_queue) > 0:
                     self.process_image(self.image_process_queue.pop(0), step)
                         
@@ -687,27 +724,9 @@ class Trainer:
                 
 
                 with self.train_lock:
-                    if self.calculate_diff and len(self.query_diff_queue) > self.query_diff_size and image is not None:
-                        self.pipeline.eval()
-                        heatmap_masks, gsplat_outputs_list, poses, depths, images = [], [], [], [], []
-                        for _ in range(self.query_diff_queue):
-                            image, depth, pose = self.query_diff_queue.pop(0)
-                            heat_map, gsplat_outputs = self.pipeline.query_diff(image, pose, depth, vis_verbose = self.pipeline.plot_verbose.value)
-                            if self.pipeline.use_clip:
-                                heat_map_mask = heat_map > -0.85
-                            else:
-                                heat_map_mask = heat_map
+                    while len(self.query_diff_queue) > self.query_diff_size:
+                        self.process_query_diff(self.query_diff_queue.pop(0), step)
 
-                            heatmap_masks.append(heat_map_mask)
-                            gsplat_outputs_list.append(gsplat_outputs)
-                            poses.append(pose)
-                            depths.append(depth)
-                            images.append(image)
-
-                        affected_gaussians = self.pipeline.heatmaps2gaussians(heatmap_masks, gsplat_outputs_list, poses, depths, images)
-                        if len(affected_gaussians) > 0:
-                            # TODO: deal with the affected gaussians
-                            pass
 
                     #######################################
                     # Normal training loop
