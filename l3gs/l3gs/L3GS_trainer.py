@@ -352,7 +352,7 @@ class Trainer:
         # print('self.imgidx: ' + str(self.imgidx))
         # # CONSOLE.print("Adding image to dataset")
         # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'bgr8'),dtype = torch.float32)/255.
         # # By default the D4 VPU provides 16bit depth with a depth unit of 1000um (1mm).
         # # --> depth_data is in meters.
         # depth_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
@@ -412,8 +412,15 @@ class Trainer:
         flat_image = image.reshape(-1, 3)
 
         ### simple uniform sampling approach
-        num_points = flat_depth.shape[0]
-        sampled_indices = torch.randint(0, num_points, (num_samples,))
+        # num_points = flat_depth.shape[0]
+        # sampled_indices = torch.randint(0, num_points, (num_samples,))
+        non_zero_depth_indices = torch.nonzero(flat_depth != 0).squeeze()
+
+        # Ensure there are enough non-zero depth indices to sample from
+        if non_zero_depth_indices.numel() < num_samples:
+            num_samples = non_zero_depth_indices.numel()
+        # Sample from non-zero depth indices
+        sampled_indices = non_zero_depth_indices[torch.randint(0, non_zero_depth_indices.shape[0], (num_samples,))]
 
         sampled_depth = flat_depth[sampled_indices] * scale
         # sampled_depth = flat_depth[sampled_indices]
@@ -442,7 +449,7 @@ class Trainer:
         # start = time.time()
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'bgr8'),dtype = torch.float32)/255.
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
@@ -488,7 +495,15 @@ class Trainer:
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 4
         # print('process idx: ' + str(idx))
-        if self.done_scale_calc and idx % project_interval == 0:
+
+        if self.done_scale_calc and msg.depth is not None and idx % project_interval == 0:
+            depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
+            depth = depth.unsqueeze(0).unsqueeze(0)
+            deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+            self.deprojected_queue.extend(deprojected)
+            self.colors_queue.extend(colors)
+
+        elif self.done_scale_calc and msg.depth is None and idx % project_interval == 0:
             depth = self.pipeline.monodepth_inference(image_data.numpy())
             # depth = torch.rand((1,1,480,640))
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
@@ -701,8 +716,9 @@ class Trainer:
                         method='up',
                         center_method='poses'
                     )
-                    scale_factor = 1.0
-                    scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
+                    # scale_factor = 1.0
+                    # scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
+                    scale_factor = 5.593
                     print(scale_factor)
                     self.pipeline.datamanager.train_dataset._dataparser_outputs.dataparser_transform = transform_matrix
                     self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform = transform_matrix
