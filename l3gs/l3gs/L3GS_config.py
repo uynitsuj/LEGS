@@ -55,20 +55,14 @@ l3gs_method = MethodSpecification(
                     max_steps=30000,
                 ),
             },
-            "color": {
-                "optimizer": AdamOptimizerConfig(lr=5e-4, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=1e-3,
-                    max_steps=30000,
-                ),
+            "features_dc": {
+                "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
+                "scheduler": None,
             },
-            # "shs": {
-            #     "optimizer": AdamOptimizerConfig(lr=2.5e-3 / 20, eps=1e-15),
-            #     "scheduler": ExponentialDecaySchedulerConfig(
-            #         lr_final=1e-3 / 20,
-            #         max_steps=30000,
-            #     ),
-            # },
+            "features_rest": {
+                "optimizer": AdamOptimizerConfig(lr=0.0025 / 20, eps=1e-15),
+                "scheduler": None,
+            },
             "opacity": {
                 "optimizer": AdamOptimizerConfig(lr=0.05, eps=1e-15),
                 "scheduler": None,
@@ -91,7 +85,7 @@ l3gs_method = MethodSpecification(
         },
         },
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
-        vis="viewer_beta",
+        vis="viewer",
     ),
     description="Base config for Lifelong Language Embedded Gaussian Splatting",
 )
