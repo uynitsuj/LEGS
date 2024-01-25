@@ -33,7 +33,7 @@ from nerfstudio.cameras.cameras import Cameras
 from gsplat._torch_impl import quat_to_rotmat
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.engine.optimizers import Optimizers
-# from nerfstudio.models.base_model import Model, ModelConfig
+from nerfstudio.models.base_model import Model, ModelConfig
 import math
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
@@ -41,7 +41,7 @@ import viser.transforms as vtf
 # from nerfstudio.model_components.losses import scale_gauss_gradients_by_distance_squared
 from nerfstudio.viewer_beta.viewer_elements import ViewerButton, ViewerSlider, ViewerControl, ViewerVec3
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
-from nerfstudio.models.gaussian_splatting import GaussianSplattingModelConfig, GaussianSplattingModel
+# from nerfstudio.models.gaussian_splatting import GaussianSplattingModelConfig, GaussianSplattingModel
 from l3gs.fields.gaussian_lerf_field import GaussianLERFField
 from l3gs.encoders.image_encoder import BaseImageEncoderConfig, BaseImageEncoder
 from l3gs.field_components.gaussian_lerf_fieldheadnames import GaussianLERFFieldHeadNames
@@ -103,7 +103,7 @@ def projection_matrix(znear, zfar, fovx, fovy, device:Union[str,torch.device]="c
 
 
 @dataclass
-class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
+class LLGaussianSplattingModelConfig(ModelConfig):
     """Gaussian Splatting Model Config"""
 
     _target: Type = field(default_factory=lambda: LLGaussianSplattingModel)
@@ -152,7 +152,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     loss from the PhysGaussian paper
     """
 
-class LLGaussianSplattingModel(GaussianSplattingModel):
+class LLGaussianSplattingModel(Model):
     """Gaussian Splatting model
 
     Args:
