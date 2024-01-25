@@ -1120,10 +1120,10 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         else:
             gt_img = batch["image"]
         metrics_dict = {}
-        gt_rgb = gt_img.to(self.device)  # RGB or RGBA image
+        # gt_rgb = gt_img.to(self.device)  # RGB or RGBA image
         # gt_rgb = self.renderer_rgb.blend_background(gt_rgb)  # Blend if RGBA
-        predicted_rgb = outputs["rgb"]
-        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        # predicted_rgb = outputs["rgb"]
+        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
         metrics_dict['gaussian_count'] = self.num_points
