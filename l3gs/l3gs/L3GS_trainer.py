@@ -34,10 +34,10 @@ from nerfstudio.utils.decorators import check_eval_enabled, check_main_thread, c
 from nerfstudio.utils.misc import step_check
 from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.utils.writer import EventName, TimeWriter
-from nerfstudio.viewer.server.viewer_state import ViewerState
-from nerfstudio.viewer_beta.viewer import Viewer as ViewerBetaState
-from nerfstudio.viewer_beta.viewer import VISER_NERFSTUDIO_SCALE_RATIO
-from nerfstudio.viewer_beta.viewer_elements import ViewerButton, ViewerCheckbox
+from nerfstudio.viewer.viewer import Viewer as ViewerState
+from nerfstudio.viewer.viewer import VISER_NERFSTUDIO_SCALE_RATIO
+from nerfstudio.viewer.viewer_elements import ViewerButton, ViewerCheckbox
+from nerfstudio.viewer_legacy.server.viewer_state import ViewerLegacyState
 
 import nerfstudio.utils.poses as pose_utils
 import numpy as np
@@ -352,7 +352,7 @@ class Trainer:
         # print('self.imgidx: ' + str(self.imgidx))
         # # CONSOLE.print("Adding image to dataset")
         # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'bgr8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
         # # By default the D4 VPU provides 16bit depth with a depth unit of 1000um (1mm).
         # # --> depth_data is in meters.
         # depth_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
@@ -449,7 +449,7 @@ class Trainer:
         # start = time.time()
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'bgr8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
@@ -569,29 +569,33 @@ class Trainer:
                 pipeline=self.pipeline,
             )
         )
+        if self.config.is_viewer_legacy_enabled() and self.local_rank == 0:
+            datapath = self.config.data
+            if datapath is None:
+                datapath = self.base_dir
+            self.viewer_state = ViewerLegacyState(
+                self.config.viewer,
+                log_filename=viewer_log_path,
+                datapath=datapath,
+                pipeline=self.pipeline,
+                trainer=self,
+                train_lock=self.train_lock,
+            )
+            banner_messages = [f"Legacy viewer at: {self.viewer_state.viewer_url}"]
         if self.config.is_viewer_enabled() and self.local_rank == 0:
             datapath = self.config.data
             if datapath is None:
                 datapath = self.base_dir
             self.viewer_state = ViewerState(
                 self.config.viewer,
-                log_filename=self.viewer_log_path,
+                log_filename=viewer_log_path,
                 datapath=datapath,
                 pipeline=self.pipeline,
                 trainer=self,
                 train_lock=self.train_lock,
+                share=self.config.viewer.make_share_url,
             )
-            banner_messages = [f"Viewer at: {self.viewer_state.viewer_url}"]
-        if self.config.is_viewer_beta_enabled() and self.local_rank == 0:
-            self.viewer_state = ViewerBetaState(
-                self.config.viewer,
-                log_filename=self.viewer_log_path,
-                datapath=self.base_dir,
-                pipeline=self.pipeline,
-                trainer=self,
-                train_lock=self.train_lock,
-            )
-            banner_messages = [f"Viewer Beta at: {self.viewer_state.viewer_url}"]
+            banner_messages = self.viewer_state.viewer_info
         self._check_viewer_warnings()
         self._init_viewer_state()
 
@@ -699,7 +703,7 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<20):
+                elif not self.done_scale_calc and (len(parser_scale_list)<5):
                     time.sleep(0.01)
                     continue
 
