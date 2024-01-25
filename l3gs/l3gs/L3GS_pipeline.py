@@ -29,7 +29,7 @@ from copy import deepcopy
 
 from dataclasses import dataclass, field
 from nerfstudio.cameras.cameras import Cameras
-from nerfstudio.viewer_beta.viewer_elements import ViewerCheckbox
+from nerfstudio.viewer.viewer_elements import ViewerCheckbox
 from nerfstudio.models.base_model import ModelConfig
 # from nerfstudio.models.gaussian_splatting import GaussianSplattingModelConfig
 from l3gs.model.ll_gaussian_splatting import LLGaussianSplattingModelConfig
@@ -39,7 +39,7 @@ from torchvision.transforms.functional import resize
 from nerfstudio.configs.base_config import InstantiateConfig
 # from lerf.utils.camera_utils import deproject_pixel, get_connected_components, calculate_overlap, non_maximum_suppression
 from l3gs.encoders.image_encoder import BaseImageEncoderConfig, BaseImageEncoder
-from gsplat.sh import SphericalHarmonics, num_sh_bases
+from gsplat.sh import spherical_harmonics, num_sh_bases
 
 from typing import Literal, Type, Optional, List, Tuple, Dict
 # import lerf.utils.query_diff_utils as query_diff_utils

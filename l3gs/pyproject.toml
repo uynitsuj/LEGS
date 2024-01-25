@@ -4,8 +4,8 @@ version = "0.1.1"
 requires-python = ">=3.8"
 
 dependencies=[
-    "nerfstudio@git+https://github.com/nerfstudio-project/nerfstudio@b669f51f02cf935e53786ddd56e7581e1138da2b",
-    "gsplat@git+https://github.com/nerfstudio-project/gsplat@87159918cfa7459bbebeb114dd4f1bb9c9310d3e",
+    "nerfstudio == 1.0",
+    "gsplat == 0.1.2.1",
     "Pillow >=9.3.0, <10.0.0",
     "urllib3==1.26.15",
     "open-clip-torch==2.23.0",
