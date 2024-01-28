@@ -45,6 +45,7 @@ import scipy.spatial.transform as transform
 import rclpy
 from rclpy.node import Node
 from lifelong_msgs.msg import ImagePose
+from lifelong_msgs.msg import ImagePoses
 from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
@@ -130,7 +131,7 @@ class TrainerNode(Node):
     def __init__(self,trainer):
         super().__init__('trainer_node')
         self.trainer_ = trainer
-        self.subscription_ = self.create_subscription(ImagePose,"/camera/color/imagepose",self.add_img_callback,100)
+        self.subscription_ = self.create_subscription(ImagePoses,"/camera/color/imagepose",self.add_img_callback,100)
 
         # self.subscription_ = self.create_subscription(ImagePose,"/sim_realsense",self.add_img_callback,100)
 
@@ -341,7 +342,7 @@ class Trainer:
         self.train_lerf = True
 
 
-    def add_img_callback(self, msg:ImagePose, decode_only=False):
+    def add_img_callback(self, msg:ImagePoses, decode_only=False):
         '''
         this function queues things to be added
         returns the image, depth, and pose if the dataparser is defined yet, otherwise None
@@ -442,7 +443,7 @@ class Trainer:
         return P_world[:, :3], sampled_image
     
     # @profile
-    def process_image(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
+    def process_image(self, msg:ImagePoses, step, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
         '''
