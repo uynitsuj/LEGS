@@ -342,7 +342,7 @@ class Trainer:
         self.train_lerf = True
 
 
-    def add_img_callback(self, msg:ImagePoses, decode_only=False):
+    def add_img_callback(self, msg:ImagePose, decode_only=False):
         '''
         this function queues things to be added
         returns the image, depth, and pose if the dataparser is defined yet, otherwise None
@@ -443,7 +443,7 @@ class Trainer:
         return P_world[:, :3], sampled_image
     
     # @profile
-    def process_image(self, msg:ImagePoses, step, clip_dict = None, dino_data = None):
+    def process_image(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
         '''
