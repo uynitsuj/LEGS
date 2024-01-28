@@ -347,6 +347,8 @@ class L3GSPipeline(VanillaPipeline):
             masked_depth = depth * hm.float()
             while len(masked_depth.shape) < 4:
                 masked_depth = masked_depth.unsqueeze(0)
+
+            import pdb; pdb.set_trace()
             deprojected, _ = U.deproject_to_RGB_point_cloud(im, masked_depth, pose, self.datamanager.train_dataparser_outputs.dataparser_scale)
             # to_flag = torch.where(torch.abs(self.model.means - deprojected) < distance_thresh)
             distances = cdist(self.model.means.detach().cpu().numpy(), deprojected.cpu())
