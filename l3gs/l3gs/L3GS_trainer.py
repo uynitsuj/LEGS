@@ -422,32 +422,34 @@ class Trainer:
         heatmaps.append(heat_map)
         heatmap_masks.append(cleaned_heatmap_mask)
         gsplat_outputs_list.append(gsplat_outputs)
+        images.append(image)
         poses.append(pose)
         depths.append(depth)
         images.append(image)
 
         # affected_gaussians_idxs = self.pipeline.heatmaps2gaussians(heatmap_masks, gsplat_outputs_list, poses, depths, images)
         
-        boxes, points_tr = self.pipeline.heatmaps2box(heatmaps, heatmap_masks, poses, depths, depths, gsplat_outputs_list)
+        boxes, points_tr = self.pipeline.heatmaps2box(heatmaps, heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
 
         if len(boxes) > 0:
             # Change detected!
-            self.viewer_state.viser_server.add_point_cloud(
-                '/pointcloud',
-                points=points_tr.vertices * 10,
-                colors=points_tr.visual.vertex_colors[:, :3]
-            )
+            # self.viewer_state.viser_server.add_point_cloud(
+            #     '/pointcloud',
+            #     points=points_tr.vertices, # * 10,
+            #     colors=points_tr.visual.vertex_colors[:, :3],
+            #     point_size = 1.0
+            # )
             
             for obox_ind, obox in enumerate(boxes):
                 import trimesh
                 bbox = trimesh.creation.box(
-                    extents=obox.S.cpu().numpy()*10
+                    extents=obox.S.cpu().numpy()# *10
                 )
                 bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
                     f"/bbox_{obox_ind}",
                     bbox,
                     wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
-                    position=obox.T.cpu().numpy()*10,
+                    position=obox.T.cpu().numpy()# *10,
                 )
                 print("just visualized the box.")
 

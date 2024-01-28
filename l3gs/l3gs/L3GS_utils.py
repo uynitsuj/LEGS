@@ -2,7 +2,7 @@ import torch
 
 class Utils:
     # @profile
-    def deproject_to_RGB_point_cloud(image, depth_image, camera, scale, num_samples = 250, device = 'cuda:0'):
+    def deproject_to_RGB_point_cloud(image, depth_image, camera, scale, sampling=True, num_samples = 250, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -33,8 +33,18 @@ class Utils:
         flat_image = image.reshape(-1, 3)
 
         ### simple uniform sampling approach
-        num_points = flat_depth.shape[0]
-        sampled_indices = torch.randint(0, num_points, (num_samples,))
+        # num_points = flat_depth.shape[0]
+        # sampled_indices = torch.randint(0, num_points, (num_samples,))
+        non_zero_depth_indices = torch.nonzero(flat_depth != 0).squeeze()
+
+        # Ensure there are enough non-zero depth indices to sample from
+        if non_zero_depth_indices.numel() < num_samples:
+            num_samples = non_zero_depth_indices.numel()
+        # Sample from non-zero depth indices
+        if sampling:
+            sampled_indices = non_zero_depth_indices[torch.randint(0, non_zero_depth_indices.shape[0], (num_samples,))]
+        else:
+            sampled_indices = non_zero_depth_indices
 
         sampled_depth = flat_depth[sampled_indices] * scale
         # sampled_depth = flat_depth[sampled_indices]

@@ -358,6 +358,7 @@ class L3GSPipeline(VanillaPipeline):
     def heatmaps2box(self, 
         heatmaps: List[torch.Tensor], # list of boolean tensors (HxW)
         heatmap_masks: List[torch.Tensor], # list of boolean tensors (HxW)
+        images: List[torch.Tensor],
         poses: List[Cameras], 
         depths: List[torch.Tensor], # Nerfstudio depth (distance-depth)
         depth_distance: List[torch.Tensor], # Realsense depth (z-depth) converted to nerfstudio depth (distance-depth)
@@ -369,89 +370,94 @@ class L3GSPipeline(VanillaPipeline):
         list_of_boxes = []
         list_of_points_tr = []
 
-        for hm, hm_mask, pose, depth, d_distance, l_output in zip(heatmaps, heatmap_masks, poses, depths, depth_distance, lerf_outputs_list):
+        for hm, hm_mask, image, pose, depth, d_distance, l_output in zip(heatmaps, heatmap_masks, images, poses, depths, depth_distance, lerf_outputs_list):
             if torch.sum(hm) == 0:
                 continue
             
             components = U.get_connected_components(hm_mask)
-            
-            for i, component in enumerate(components):
-                # if torch.sum(component) > 16:
-                if torch.sum(component) > 8:
-                    # Get pixel indices where the heatmap is non-zero
-                    # import pdb; pdb.set_trace()
-                    # NOTE(cmk): this is depth thresholding in nerfstudio space,
-                    # where the depth has already been scaled s.t. the region scanned already
-                    # should fit into the unit cube. All the points that should be checked for
-                    # the diff should be less than 1.0 in depth away...
-                    # depth_threshold = 1.0
-                    # mask = component & ((l_output['depth'][::4, ::4] < depth_threshold).squeeze() | (d_distance[::16, ::16] < depth_threshold)).squeeze()
-                    # if mask.sum() == 0:
-                    #     continue
-                    # # included_points = lerf_outputs['pointcloud'][::4, ::4][mask]
-                    # p_copy = deepcopy(p).to(self.device)
-                    # p_copy.rescale_output_resolution(1/4.0)
-                    # camera_ray_bundle = p_copy.generate_rays(camera_indices=0)
+            largest_component_idx = torch.argmax(torch.tensor([torch.sum(comp) for comp in components]))
+            component = components[largest_component_idx]
 
-                    # d_distance[d_distance == 0] = 1000
-                    # closer_depth = torch.where(
-                    #     (l_output['depth'].squeeze() < d_distance[::4, ::4]), 
-                    #     l_output['depth'].squeeze(), 
-                    #     d_distance[::4, ::4]
-                    #     )
-                    # included_points = camera_ray_bundle.origins + camera_ray_bundle.directions * closer_depth.unsqueeze(-1)
-                    # # included_points = included_points[::4, ::4][mask]
-                    # included_points = included_points[torch.repeat_interleave(torch.repeat_interleave(mask, 4, dim=0), 4, dim=1)]
-                    # included_points_color = l_output['rgb'][torch.repeat_interleave(torch.repeat_interleave(mask, 4, dim=0), 4, dim=1)]
+            # Get pixel indices where the heatmap is non-zero
+            # import pdb; pdb.set_trace()
+            # NOTE(cmk): this is depth thresholding in nerfstudio space,
+            # where the depth has already been scaled s.t. the region scanned already
+            # should fit into the unit cube. All the points that should be checked for
+            # the diff should be less than 1.0 in depth away...
+            # depth_threshold = 1.0
+            # mask = component & ((l_output['depth'][::4, ::4] < depth_threshold).squeeze() | (d_distance[::16, ::16] < depth_threshold)).squeeze()
+            # if mask.sum() == 0:
+            #     continue
+            # # included_points = lerf_outputs['pointcloud'][::4, ::4][mask]
+            # p_copy = deepcopy(p).to(self.device)
+            # p_copy.rescale_output_resolution(1/4.0)
+            # camera_ray_bundle = p_copy.generate_rays(camera_indices=0)
 
-                    # included_points = torch.where(component > 0) * depth
+            # d_distance[d_distance == 0] = 1000
+            # closer_depth = torch.where(
+            #     (l_output['depth'].squeeze() < d_distance[::4, ::4]), 
+            #     l_output['depth'].squeeze(), 
+            #     d_distance[::4, ::4]
+            #     )
+            # included_points = camera_ray_bundle.origins + camera_ray_bundle.directions * closer_depth.unsqueeze(-1)
+            # # included_points = included_points[::4, ::4][mask]
+            # included_points = included_points[torch.repeat_interleave(torch.repeat_interleave(mask, 4, dim=0), 4, dim=1)]
+            # included_points_color = l_output['rgb'][torch.repeat_interleave(torch.repeat_interleave(mask, 4, dim=0), 4, dim=1)]
 
-                    plt.imsave(f'component_images/component{i}.png', component.detach().cpu().numpy())
-                    plt.imsave('depth.png', depth.detach().cpu().numpy())
-                    nonzero = torch.where(component > 0)
+            # included_points = torch.where(component > 0) * depth
 
-                    # depth = depth * self.datamanager.train_dataparser_outputs.dataparser_scale / 10.
-                    depth = l_output['depth'].squeeze(2)
+            plt.imsave('component.png', component.detach().cpu().numpy())
+            plt.imsave('depth.png', depth.detach().cpu().numpy())
+            component_mask = torch.where(component > 0)
 
-                    included_points = torch.stack([*nonzero, depth[nonzero]], dim=-1)
-                    included_points_color = l_output['rgb'][nonzero]
-                    # import pdb; pdb.set_trace()
+            # depth = depth * self.datamanager.train_dataparser_outputs.dataparser_scale / 10.
+            depth = l_output['depth'].squeeze(2) / 10.
 
-                    # min_corner = torch.min(included_points, dim=0).values
-                    # max_corner = torch.max(included_points, dim=0).values
+            # included_points = torch.stack([*component_mask, depth[component_mask]], dim=-1)
+            masked_depth = depth * component
+            import pdb; pdb.set_trace()
+            while len(masked_depth.shape) < 4:
+                masked_depth = masked_depth.unsqueeze(0)
+            included_points, _ = U.deproject_to_RGB_point_cloud(image, masked_depth, pose, self.datamanager.train_dataparser_outputs.dataparser_scale, sampling=False)
 
-                    # check for outlier rejection
-                    pcd = o3d.geometry.PointCloud()
-                    pcd.points = o3d.utility.Vector3dVector(included_points.detach().cpu().numpy())
-                    pcd.colors = o3d.utility.Vector3dVector(included_points_color.detach().cpu().numpy())
-                    pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=5, std_ratio=0.01)
-                    intvector = pcd.cluster_dbscan(eps=5, min_points=10, print_progress=False)
-                    intvector = np.asarray(intvector)
+            included_points_color = l_output['rgb'][component_mask]
+            # import pdb; pdb.set_trace()
 
-                    # import pdb; pdb.set_trace()
-                    if len(np.unique(intvector)) == 1 and intvector[0] == -1:
-                        continue
-                    if len(np.unique(intvector)) == 1: # only one cluster, not noise (intvector == 0)
-                        assert intvector[0] == 0
-                        points = torch.from_numpy(np.asarray(pcd.points))[intvector == 0]
-                        points_tr = trimesh.PointCloud(points.numpy())
-                        points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector == 0]
-                    elif len(np.unique(intvector)) == 2: # only one cluster, and noise (intvector == -1)
-                        points = torch.from_numpy(np.asarray(pcd.points))[intvector != -1]
-                        points_tr = trimesh.PointCloud(points.numpy())
-                        points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector != -1]
-                    else:
-                        # choose the largest cluster that is not -1
-                        cluster_sizes = []
-                        for i in range(np.unique(intvector).shape[0] - 1): # ignore -1
-                            cluster_sizes.append(np.sum(intvector == i))
-                        cluster_sizes = np.asarray(cluster_sizes)
-                        chosen_cluster = np.argmax(cluster_sizes)
-                        points = torch.from_numpy(np.asarray(pcd.points))[intvector == chosen_cluster]
-                        points_tr = trimesh.PointCloud(points.numpy())
-                        points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector == chosen_cluster]
+            min_corner = torch.min(included_points, dim=0).values
+            max_corner = torch.max(included_points, dim=0).values
 
-                    list_of_points_tr.append(points_tr)
+            # check for outlier rejection
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(included_points.detach().cpu().numpy())
+            pcd.colors = o3d.utility.Vector3dVector(included_points_color.detach().cpu().numpy())
+            pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=5, std_ratio=0.01)
+            intvector = pcd.cluster_dbscan(eps=5, min_points=10, print_progress=False)
+            intvector = np.asarray(intvector)
+
+            # import pdb; pdb.set_trace()
+            if len(np.unique(intvector)) == 1 and intvector[0] == -1:
+                continue
+            if len(np.unique(intvector)) == 1: # only one cluster, not noise (intvector == 0)
+                assert intvector[0] == 0
+                points = torch.from_numpy(np.asarray(pcd.points))[intvector == 0]
+                points_tr = trimesh.PointCloud(points.numpy())
+                points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector == 0]
+            elif len(np.unique(intvector)) == 2: # only one cluster, and noise (intvector == -1)
+                points = torch.from_numpy(np.asarray(pcd.points))[intvector != -1]
+                points_tr = trimesh.PointCloud(points.numpy())
+                points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector != -1]
+            else:
+                # choose the largest cluster that is not -1
+                cluster_sizes = []
+                for i in range(np.unique(intvector).shape[0] - 1): # ignore -1
+                    cluster_sizes.append(np.sum(intvector == i))
+                cluster_sizes = np.asarray(cluster_sizes)
+                chosen_cluster = np.argmax(cluster_sizes)
+                points = torch.from_numpy(np.asarray(pcd.points))[intvector == chosen_cluster]
+                points_tr = trimesh.PointCloud(points.numpy())
+                points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector == chosen_cluster]
+
+            list_of_points_tr.append(points_tr)
 
         if len(list_of_points_tr) == 0:
             return [], []
@@ -498,7 +504,7 @@ class L3GSPipeline(VanillaPipeline):
             #### end OrientedBox
 
             #### SceneBox
-            # aabb = torch.stack([torch.min(points_proj, 0).values, torch.max(points_proj, 0).values])
+            # aabb = torch.stack([min_corner, max_corner])
             # sbox = SceneBox(aabb=aabb)
             # list_of_boxes.append(sbox)
             #### end SceneBox
