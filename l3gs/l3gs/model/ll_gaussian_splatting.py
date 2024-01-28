@@ -107,7 +107,7 @@ class LLGaussianSplattingModelConfig(GaussianSplattingModelConfig):
     """Gaussian Splatting Model Config"""
 
     _target: Type = field(default_factory=lambda: LLGaussianSplattingModel)
-    warmup_length: int = 500
+    warmup_length: int = 1000
     """period of steps where refinement is turned off"""
     refine_every: int = 75
     """period of steps where gaussians are culled and densified"""
@@ -225,9 +225,10 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         self.viewer_control = ViewerControl()
         self.viser_scale_ratio = 0.1
 
-        self.crop_to_word = ViewerButton("Crop gaussians to word", cb_hook=self.crop_to_word_cb)
-        self.reset_crop = ViewerButton("Reset crop", cb_hook=self.reset_crop_cb)
-        self.crop_scale = ViewerSlider("Crop scale", 0.1, 0, 3.0, 0.01)
+        # self.crop_to_word = ViewerButton("Crop gaussians to word", cb_hook=self.crop_to_word_cb)
+        self.frame_on_word = ViewerButton("Localize Query", cb_hook=self.localize_query_cb)
+        # self.reset_crop = ViewerButton("Reset crop", cb_hook=self.reset_crop_cb)
+        # self.crop_scale = ViewerSlider("Crop scale", 0.1, 0, 3.0, 0.01)
         self.relevancy_thresh = ViewerSlider("Relevancy Thresh", 0.0, 0, 1.0, 0.01)
 
         self._crop_center_init = None
@@ -953,23 +954,24 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
             background,
         )
         outputs["rgb"] = rgb
+
+        depth_im = RasterizeGaussians.apply(
+            self.xys.detach(),
+            depths,
+            self.radii,
+            conics.detach(),
+            num_tiles_hit,
+            depths[:, None].repeat(1, 3),
+            torch.sigmoid(opacities_crop.detach()),
+            H,
+            W,
+            torch.ones(3, device=self.device) * 10,
+        )[..., 0:1]
+        outputs["depth"] = depth_im
         
         depth_im = None
         if self.datamanager.use_clip:
             if self.step - self.datamanager.lerf_step > 500:
-                depth_im = RasterizeGaussians.apply(
-                    self.xys.detach(),
-                    depths,
-                    self.radii,
-                    conics.detach(),
-                    num_tiles_hit,
-                    depths[:, None].repeat(1, 3),
-                    torch.sigmoid(opacities_crop.detach()),
-                    H,
-                    W,
-                    torch.ones(3, device=self.device) * 10,
-                )[..., 0:1]
-                outputs["depth"] = depth_im
                 ########################
                 # CLIP Relevancy Field #
                 ########################
@@ -1118,10 +1120,10 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         else:
             gt_img = batch["image"]
         metrics_dict = {}
-        gt_rgb = gt_img.to(self.device)  # RGB or RGBA image
+        # gt_rgb = gt_img.to(self.device)  # RGB or RGBA image
         # gt_rgb = self.renderer_rgb.blend_background(gt_rgb)  # Blend if RGBA
-        predicted_rgb = outputs["rgb"]
-        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        # predicted_rgb = outputs["rgb"]
+        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
         metrics_dict['gaussian_count'] = self.num_points
@@ -1199,6 +1201,63 @@ class LLGaussianSplattingModel(GaussianSplattingModel):
         else:
             return distances[:, 1:].astype(np.float32), indices[:, 1:].astype(np.float32)
     
+    def localize_query_cb(self,element):
+        with torch.no_grad():
+            # clip_feats = self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1,keepdim=True), self.crop_scale.value * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+            # clip_feats = self.gaussian_lerf_field.get_outputs(self.means, self.crop_scale.value * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+            # clip_feats = self.gaussian_lerf_field.get_outputs(self.means, self.best_scales[0].to(self.device) * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+
+            # Do K nearest neighbors for each point and then avg the clip hash for each point based on the KNN
+            distances, indicies = self.k_nearest_sklearn(self.means.data, 3, True)
+            distances = torch.from_numpy(distances).to(self.device)
+            indicies = torch.from_numpy(indicies).to(self.device).view(-1)
+            weights = torch.sigmoid(self.opacities[indicies].view(-1, 4))
+            weights = torch.nn.Softmax(dim=-1)(weights)
+            points = self.means[indicies]
+            # clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+            clip_hash_encoding = self.gaussian_lerf_field.get_hash(points)
+            clip_hash_encoding = clip_hash_encoding.view(-1, 4, clip_hash_encoding.shape[1])
+            clip_hash_encoding = (clip_hash_encoding * weights.unsqueeze(-1))
+            clip_hash_encoding = clip_hash_encoding.sum(dim=1)
+            clip_feats = self.gaussian_lerf_field.get_outputs_from_feature(clip_hash_encoding, self.best_scales[0].to(self.device) * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+            relevancy = self.image_encoder.get_relevancy(clip_feats / (clip_feats.norm(dim=-1, keepdim=True)+1e-6), 0).view(self.num_points, -1)
+            color = apply_colormap(relevancy[..., 0:1])
+            self.viewer_control.viser_server.add_point_cloud("relevancy", self.means.numpy(force=True) * 10, color.numpy(force=True), 0.01)
+
+            # Add a slider to debug the relevancy values
+            
+            # self.crop_ids = (relevancy[..., 0] > self.relevancy_thresh.value)
+            
+            #Define all crop viewer elements
+            self.crop_points = relevancy[..., 0] > self.relevancy_thresh.value
+            self._crop_center_init = self.means[self.crop_points].mean(dim=0).cpu().numpy()
+            self.original_means = self.means.data.clone()
+            
+            query = self._crop_center_init / self.viser_scale_ratio
+
+            self.viewer_control.viser_server.add_frame(
+            "/query",
+            axes_length = 15, 
+            axes_radius = 0.025 * 30,
+            wxyz=(1.0, 0.0, 0.0, 0.0),
+            position=(query[0], query[1], query[2]),
+            )
+            
+            transform = self.datamanager.train_dataset._dataparser_outputs.dataparser_transform
+            scale = self.datamanager.train_dataset._dataparser_outputs.dataparser_scale
+
+            print(transform)
+            print(scale)
+
+            # self._crop_handle = self.viewer_control.viser_server.add_transform_controls("Crop Points", depth_test=False, line_width=4.0)
+            # world_center = tuple(p / self.viser_scale_ratio for p in self._crop_center_init)
+            # self._crop_handle.position = world_center
+
+            # self._crop_center.value = tuple(p / self.viser_scale_ratio for p in self._crop_center_init)
+
+            # self.viewer_control.viser_server.add_point_cloud("Centroid", self._crop_center_init / self.viser_scale_ratio, np.array([0,0,0]), 0.1)
+
+
     def crop_to_word_cb(self,element):
         with torch.no_grad():
             # clip_feats = self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1,keepdim=True), self.crop_scale.value * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)

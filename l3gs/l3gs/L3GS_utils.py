@@ -54,3 +54,27 @@ class Utils:
         P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
         
         return P_world[:, :3], sampled_image
+
+    def get_connected_components(mask):
+        visited = torch.zeros_like(mask, dtype=torch.bool)
+        components = []
+        h, w = mask.shape
+        
+        def dfs(y, x, component_mask):
+            if y < 0 or y >= h or x < 0 or x >= w or visited[y, x] or mask[y, x] == 0:
+                return
+            
+            visited[y, x] = True
+            component_mask[y, x] = 1
+            
+            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                dfs(y + dy, x + dx, component_mask)
+
+        for y in range(h):
+            for x in range(w):
+                if mask[y, x] == 1 and not visited[y, x]:
+                    component_mask = torch.zeros_like(mask)
+                    dfs(y, x, component_mask)
+                    components.append(component_mask)
+                    
+        return components

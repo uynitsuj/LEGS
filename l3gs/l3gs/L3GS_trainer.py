@@ -17,6 +17,7 @@ from rich import box, style
 from rich.panel import Panel
 from rich.table import Table
 from cv_bridge import CvBridge  # Needed for converting between ROS Image messages and OpenCV images
+from torch.nn import Parameter
 
 
 from nerfstudio.cameras.camera_utils import get_distortion_params
@@ -209,6 +210,7 @@ class Trainer:
         self.deprojected_queue = deque()
         self.colors_queue = deque()
         self.train_lerf = False
+        self.diff_wait_counter = 0
 
 
     def handle_stage_btn(self, handle: ViewerButton):
@@ -281,7 +283,6 @@ class Trainer:
         from torchmetrics.functional import structural_similarity_index_measure
         from torchmetrics.image import PeakSignalNoiseRatio
         from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-        import pdb; pdb.set_trace()
         cameras = self.pipeline.datamanager.train_dataset.cameras[:len(self.pipeline.datamanager.train_dataset)]
         stage = self.pipeline.datamanager.train_dataset.stage[-1]
         self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
@@ -353,7 +354,7 @@ class Trainer:
         # print('self.imgidx: ' + str(self.imgidx))
         # # CONSOLE.print("Adding image to dataset")
         # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.  ### can be made into bgr8
         # # By default the D4 VPU provides 16bit depth with a depth unit of 1000um (1mm).
         # # --> depth_data is in meters.
         # depth_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
@@ -383,9 +384,18 @@ class Trainer:
         # return img_out, dep_out, retc
 
     def process_query_diff(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
-        heatmap_masks, gsplat_outputs_list, poses, depths, images = [], [], [], [], []
+        self.diff_wait_counter -= 1
+        if self.diff_wait_counter > 0:
+            return
+        
+        heatmaps, heatmap_masks, gsplat_outputs_list, poses, depths, images = [], [], [], [], [], []
 
-        camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+        c2w = ros_pose_to_nerfstudio(msg.pose)
+        H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
+        row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=c2w.device)
+        c2w= torch.matmul(torch.cat([H,row]),torch.cat([c2w,row]))[:3,:]
+        c2w[:3,3] *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+        
         image = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
         image, depth = image.to(self.device), depth.to(self.device)
@@ -398,28 +408,117 @@ class Trainer:
         width = torch.tensor([msg.w])
         height = torch.tensor([msg.h])
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        camera_type = [CameraType.PERSPECTIVE]
-        pose = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+        camera_type = CameraType.PERSPECTIVE
+        pose = Cameras(c2w, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+        pose.camera_type = pose.camera_type.unsqueeze(0)
 
-        heat_map, gsplat_outputs = self.pipeline.query_diff(image, pose, depth, step, vis_verbose = self.pipeline.plot_verbose)
+        heat_map, cleaned_heatmap_mask, gsplat_outputs = self.pipeline.query_diff(image, pose, depth, step, vis_verbose = self.pipeline.plot_verbose)
         # import pdb; pdb.set_trace()
-        if self.pipeline.use_clip:
-            heat_map_mask = heat_map > -0.85
-        else:
-            heat_map_mask = heat_map
+        # if self.pipeline.use_clip:
+        #     heat_map_mask = heat_map > -0.85
+        # else:
+        #     heat_map_mask = heat_map
 
-        heatmap_masks.append(heat_map_mask)
+        heatmaps.append(heat_map)
+        heatmap_masks.append(cleaned_heatmap_mask)
         gsplat_outputs_list.append(gsplat_outputs)
         poses.append(pose)
         depths.append(depth)
         images.append(image)
 
-        affected_gaussians = self.pipeline.heatmaps2gaussians(heatmap_masks, gsplat_outputs_list, poses, depths, images)
-        import pdb; pdb.set_trace()
-        if len(affected_gaussians) > 0:
-            # TODO: deal with the affected gaussians
-            pass
+        # affected_gaussians_idxs = self.pipeline.heatmaps2gaussians(heatmap_masks, gsplat_outputs_list, poses, depths, images)
+        
+        boxes, points_tr = self.pipeline.heatmaps2box(heatmaps, heatmap_masks, poses, depths, depths, gsplat_outputs_list)
 
+        if len(boxes) > 0:
+            # Change detected!
+            self.viewer_state.viser_server.add_point_cloud(
+                '/pointcloud',
+                points=points_tr.vertices * 10,
+                colors=points_tr.visual.vertex_colors[:, :3]
+            )
+            
+            for obox_ind, obox in enumerate(boxes):
+                import trimesh
+                bbox = trimesh.creation.box(
+                    extents=obox.S.cpu().numpy()*10
+                )
+                bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
+                    f"/bbox_{obox_ind}",
+                    bbox,
+                    wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
+                    position=obox.T.cpu().numpy()*10,
+                )
+                print("just visualized the box.")
+
+                affected_gaussians_idxs = self.pipeline.bbox2gaussians(obox)
+                # print(affected_gaussians_idxs.shape, self.pipeline.model.means.shape)
+                # self.pipeline.model.means = Parameter(self.pipeline.model.means[~affected_gaussians_idxs].detach())
+            self.diff_wait_counter = 5
+
+            import pdb; pdb.set_trace()
+            print(affected_gaussians_idxs)
+        # TODO: mask out regions in all training images
+
+    # @profile
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 250, device = 'cuda:0'):
+        """
+        Converts a depth image into a point cloud in world space using a Camera object.
+        """
+        scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+        # import pdb; pdb.set_trace()
+        H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
+        # c2w = camera.camera_to_worlds.cpu()
+        # depth_image = depth_image.cpu()
+        # image = image.cpu()
+        c2w = camera.camera_to_worlds.to(device)
+        depth_image = depth_image.to(device)
+        image = image.to(device)
+        fx = camera.fx.item()
+        fy = camera.fy.item()
+        # cx = camera.cx.item()
+        # cy = camera.cy.item()
+
+        _, _, height, width = depth_image.shape
+
+        grid_x, grid_y = torch.meshgrid(torch.arange(width, device = device), torch.arange(height, device = device), indexing='ij')
+        grid_x = grid_x.transpose(0,1).float()
+        grid_y = grid_y.transpose(0,1).float()
+
+        flat_grid_x = grid_x.reshape(-1)
+        flat_grid_y = grid_y.reshape(-1)
+        flat_depth = depth_image[0, 0].reshape(-1)
+        flat_image = image.reshape(-1, 3)
+
+        ### simple uniform sampling approach
+        # num_points = flat_depth.shape[0]
+        # sampled_indices = torch.randint(0, num_points, (num_samples,))
+        non_zero_depth_indices = torch.nonzero(flat_depth != 0).squeeze()
+
+        # Ensure there are enough non-zero depth indices to sample from
+        if non_zero_depth_indices.numel() < num_samples:
+            num_samples = non_zero_depth_indices.numel()
+        # Sample from non-zero depth indices
+        sampled_indices = non_zero_depth_indices[torch.randint(0, non_zero_depth_indices.shape[0], (num_samples,))]
+
+        sampled_depth = flat_depth[sampled_indices] * scale
+        # sampled_depth = flat_depth[sampled_indices]
+        sampled_grid_x = flat_grid_x[sampled_indices]
+        sampled_grid_y = flat_grid_y[sampled_indices]
+        sampled_image = flat_image[sampled_indices]
+
+        X_camera = (sampled_grid_x - width/2) * sampled_depth / fx
+        Y_camera = -(sampled_grid_y - height/2) * sampled_depth / fy
+
+        ones = torch.ones_like(sampled_depth)
+        P_camera = torch.stack([X_camera, Y_camera, -sampled_depth, ones], dim=1)
+        
+        homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device=device)
+        camera_to_world_homogenized = torch.cat((c2w, homogenizing_row), dim=0)
+
+        P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
+        
+        return P_world[:, :3], sampled_image
     
     # @profile
     def process_image(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
@@ -429,7 +528,7 @@ class Trainer:
         # start = time.time()
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255. ### can be made into bgr8
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
@@ -475,7 +574,18 @@ class Trainer:
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 4
         # print('process idx: ' + str(idx))
-        if self.done_scale_calc and idx % project_interval == 0:
+
+        if self.done_scale_calc and msg.depth is not None and idx % project_interval == 0:
+            depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
+            depth = depth.unsqueeze(0).unsqueeze(0)
+            if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
+                import torch.nn.functional as F
+                depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
+            deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+            self.deprojected_queue.extend(deprojected)
+            self.colors_queue.extend(colors)
+
+        elif self.done_scale_calc and msg.depth is None and idx % project_interval == 0:
             depth = self.pipeline.monodepth_inference(image_data.numpy())
             # depth = torch.rand((1,1,480,640))
             deprojected, colors = U.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam, scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale)
@@ -628,13 +738,12 @@ class Trainer:
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
-                    if step >= self.pipeline.model.config.warmup_length and self.calculate_diff:
+                    if self.imgidx > 5 and self.calculate_diff:
                         # TODO: Kishore and Justin
                         self.query_diff_queue.append(msg)
-                    else:
-                        self.add_img_callback(msg)
-                        self.image_process_queue.append(msg)
-                    
+
+                    self.image_process_queue.append(msg)
+                    self.add_img_callback(msg)
                     self.imgidx += 1
 
                     if not self.done_scale_calc:
@@ -669,7 +778,7 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<5):
+                elif not self.done_scale_calc and (len(parser_scale_list)<20):
                     time.sleep(0.01)
                     continue
 
@@ -689,8 +798,9 @@ class Trainer:
                         method='up',
                         center_method='poses'
                     )
-                    scale_factor = 1.0
-                    scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
+                    # scale_factor = 1.0
+                    # scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
+                    scale_factor = 5.593
                     print(scale_factor)
                     self.pipeline.datamanager.train_dataset._dataparser_outputs.dataparser_transform = transform_matrix
                     self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform = transform_matrix
@@ -724,8 +834,9 @@ class Trainer:
                 
 
                 with self.train_lock:
-                    while len(self.query_diff_queue) > self.query_diff_size:
-                        self.process_query_diff(self.query_diff_queue.pop(0), step)
+                    if step > 3*self.pipeline.model.config.warmup_length:
+                        while len(self.query_diff_queue) > self.query_diff_size:
+                            self.process_query_diff(self.query_diff_queue.pop(0), step)
 
 
                     #######################################
