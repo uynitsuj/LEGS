@@ -199,7 +199,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         distances, _ = self.k_nearest_sklearn(self.means.data, 3)
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)/6
+        avg_dist = distances.mean(dim=-1, keepdim=True)/3
         self.scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
         self.quats = torch.nn.Parameter(random_quat_tensor(self.num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)

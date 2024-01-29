@@ -203,7 +203,7 @@ class Trainer:
         self.cvbridge = CvBridge()
         self.clip_out_queue = mp.Queue()
         self.dino_out_queue = mp.Queue()
-        self.done_scale_calc = True
+        self.done_scale_calc = False
         self.calculate_diff = False # whether or not to calculate the image diff
         self.calulate_metrics = False # whether or not to calculate the metrics
         self.num_boxes_added = 0
@@ -571,7 +571,7 @@ class Trainer:
         R = vtf.SO3.from_matrix(c2w[:3, :3])
         R = R @ vtf.SO3.from_x_radians(np.pi)
         cidx = self.viewer_state._pick_drawn_image_idxs(idx+1)[-1]
-        scale_factor = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+        # scale_factor = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
@@ -579,7 +579,7 @@ class Trainer:
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
-                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO * scale_factor # SCALE,
+                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO # SCALE,
                 )
         
         @camera_handle.on_click
@@ -801,7 +801,8 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<5):
+                # print(len(parser_scale_list))
+                if not self.done_scale_calc and (len(parser_scale_list)<5):
                     time.sleep(0.01)
                     continue
 
@@ -929,8 +930,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                # if step_check(step, self.config.steps_per_save):
-                #     self.save_checkpoint(step)
+                if step_check(step, self.config.steps_per_save):
+                    self.save_checkpoint(step)
 
                 writer.write_out_storage()
 
