@@ -571,14 +571,15 @@ class Trainer:
         R = vtf.SO3.from_matrix(c2w[:3, :3])
         R = R @ vtf.SO3.from_x_radians(np.pi)
         cidx = self.viewer_state._pick_drawn_image_idxs(idx+1)[-1]
+        scale_factor = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale=0.75,
+                    scale=0.5,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
-                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO # SCALE,
+                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO * scale_factor # SCALE,
                 )
         
         @camera_handle.on_click
@@ -590,6 +591,7 @@ class Trainer:
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 4
         # print('process idx: ' + str(idx))
+        # import pdb; pdb.set_trace()
 
         if self.done_scale_calc and msg.depth is not None and idx % project_interval == 0:
             depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
@@ -647,6 +649,7 @@ class Trainer:
         # self.pipeline.percentage_masked = ViewerButton(name="Percent Masked", cb_hook=self.handle_percentage_masked)
         # self.pipeline.plot_verbose = ViewerCheckbox(name="Plot Verbose", default_value=True)
         self.pipeline.train_lerf = ViewerButton(name="Train LERF", cb_hook=self.handle_train_lerf)
+        self.pipeline.start_diff = ViewerButton(name="Start Differencing", cb_hook=self.handle_diff)
 
         self.optimizers = self.setup_optimizers()
 
@@ -770,7 +773,7 @@ class Trainer:
 
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
-
+                        
                 # random_list = []
                 # while len(self.image_process_queue) > 0:
                 # # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
@@ -781,20 +784,18 @@ class Trainer:
                 #         self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
                 #         print("clip_out_queue get took " + str((time.time()-start)) + " s")
                     # import pdb; pdb.set_trace()
-                    
+                
                     # random_list.append(self.clip_out_queue.get())
                     # self.process_image(self.image_process_queue.pop(0), step)
-                        
-
+                
                 while len(self.image_process_queue) > 0:
                     self.process_image(self.image_process_queue.pop(0), step)
-                        
+                
                 # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
                 #     self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())
                 if self.train_lerf and not self.clip_out_queue.empty():
                     print("adding clip pyramid embeddings")
                     self.pipeline.add_to_clip(self.clip_out_queue.get(), step)
-
 
                 if self.training_state == "paused":
                     time.sleep(0.01)
@@ -810,7 +811,7 @@ class Trainer:
 
                 # Create scene scale based on the images collected so far. This is done once.
                 if not self.done_scale_calc:
-                    print("Scale calc")
+                    # print("Scale calc")
                     self.done_scale_calc = True
                     from nerfstudio.cameras.camera_utils import auto_orient_and_center_poses
                     poses = [np.concatenate([ros_pose_to_nerfstudio(p),np.array([[0,0,0,1]])],axis=0) for p in parser_scale_list]
