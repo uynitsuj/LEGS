@@ -462,6 +462,7 @@ class Trainer:
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
         c = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+        # import pdb; pdb.set_trace()
         with self.train_lock:
             self.pipeline.process_image(img = image_data, pose = c, clip=clip_dict, dino=dino_data)
         # print("Done processing image")
@@ -653,26 +654,32 @@ class Trainer:
             step = 0
             num_add = 8
             self.imgidx = 0
+            msgs=None
             
             while True:
-                rclpy.spin_once(trainer_node,timeout_sec=0.00)
-
+                if self.imgidx % 3 == 0:
+                    rclpy.spin_once(trainer_node,timeout_sec=0.00)
                 has_image_add = len(self.image_add_callback_queue) > 0
                 if has_image_add:
                     #Not sure if we want to loop till the queue is empty or not
-                    msg = self.image_add_callback_queue.pop(0)
-
+                    msgs = self.image_add_callback_queue.pop(0)
+                if msgs is not None:
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
                     if self.calculate_diff:
                         # TODO: Kishore and Justin
                         raise NotImplementedError
                     else:
+                        msg = msgs.image_poses[self.imgidx % 3]
+                        # for msg in msgs.image_poses:
+                            # import pdb; pdb.set_trace()
                         self.add_img_callback(msg)
                         self.image_process_queue.append(msg)
                         self.imgidx += 1
 
                     if not self.done_scale_calc:
+                        msg = msgs.image_poses[self.imgidx % 3]
+                        # for msg in msgs.image_poses:
                         parser_scale_list.append(msg.pose)
 
                 # random_list = []
@@ -704,7 +711,7 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<5):
+                elif not self.done_scale_calc and (len(parser_scale_list)<15):
                     time.sleep(0.01)
                     continue
 
@@ -829,8 +836,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                # if step_check(step, self.config.steps_per_save):
-                #     self.save_checkpoint(step)
+                if step_check(step, self.config.steps_per_save):
+                    self.save_checkpoint(step)
 
                 writer.write_out_storage()
 
@@ -1018,6 +1025,7 @@ class Trainer:
             # elapsed = str((end-start)*1e3)
             # print("get_train_loss time: "+ elapsed + "(ms)")
             loss = functools.reduce(torch.add, loss_dict.values())
+        import pdb; pdb.set_trace()
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [
             group

@@ -1129,6 +1129,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
             )
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
 
+        import pdb; pdb.set_trace()
+
         return loss_dict
 
     @torch.no_grad()
@@ -1241,6 +1243,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
             
             query = self._crop_center_init / self.viser_scale_ratio
 
+            import pdb; pdb.set_trace()
+
             self.viewer_control.viser_server.add_frame(
             "/query",
             axes_length = 15, 
@@ -1248,6 +1252,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
             wxyz=(1.0, 0.0, 0.0, 0.0),
             position=(query[0], query[1], query[2]),
             )
+
+            print("position: ", query)
             
             transform = self.datamanager.train_dataset._dataparser_outputs.dataparser_transform
             scale = self.datamanager.train_dataset._dataparser_outputs.dataparser_scale

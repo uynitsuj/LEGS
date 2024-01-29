@@ -76,7 +76,7 @@ class L3GSDataManagerConfig(DataManagerConfig):
     """Whether to cache images in memory. If "numpy", caches as numpy arrays, if "torch", caches as torch tensors."""
     patch_tile_size_range: Tuple[int, int] = (0.05, 0.5)
     """The range of tile sizes to sample from for patch-based training"""
-    patch_tile_size_res: int = 7
+    patch_tile_size_res: int = 6
     """The number of tile sizes to sample from for patch-based training"""
     patch_stride_scaler: float = 0.5
     """The stride scaler for patch-based training"""
@@ -541,6 +541,10 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
     def process_image(self, img:torch.tensor, cam: Cameras, clip, dino):
         # ----------------- Handling the IMAGE ----------------
         # raise NotImplementedError
+        mask = img == 0
+        # Add 0.05 to only those elements
+        img[mask] += 0.05
+
         self.train_dataset.add_image(img,cam)
         self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
         
