@@ -14,7 +14,7 @@ from nerfstudio.data.dataparsers.base_dataparser import (
     DataparserOutputs,
 )
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
-from nerfstudio.data.scene_box import SceneBox
+from l3gs.data.scene_box import SceneBox
 from nerfstudio.utils.io import load_from_json
 
 
