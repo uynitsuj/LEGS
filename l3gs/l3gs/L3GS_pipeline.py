@@ -151,7 +151,7 @@ class L3GSPipeline(VanillaPipeline):
         local_rank: int = 0,
         grad_scaler: Optional[GradScaler] = None,
         highres_downscale : float = 4.0,
-        use_clip : bool = False,
+        use_clip : bool = True,
         model_name : str = "dino_vits8",
         # dino_thres : float = 0.4, 
         clip_out_queue : Optional[mp.Queue] = None,
@@ -199,7 +199,7 @@ class L3GSPipeline(VanillaPipeline):
         self.use_rgb = use_rgb
         self.use_clip = use_clip 
         self.plot_verbose = True
-        
+
         # self.highres_downscale = highres_downscale
         
         # self.use_rgb = use_rgb

@@ -352,7 +352,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 deprojected = torch.stack(deprojected, dim=0).to(self.device)
                 colors = torch.stack(colors, dim=0).to(self.device)
                 numpts = len(deprojected)
-                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/4
+                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/3
                 self.means = torch.nn.Parameter(torch.cat([self.means.detach(), deprojected], dim=0))
 
                 self.scales = torch.nn.Parameter(torch.cat([self.scales.detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
