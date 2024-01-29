@@ -431,35 +431,44 @@ class Trainer:
         
         boxes, points_tr = self.pipeline.heatmaps2box(heatmaps, heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
 
+        gaussian_means_ptcld = self.pipeline.model.means.detach().cpu().numpy()
+        colors = np.ones_like(gaussian_means_ptcld)
+        self.viewer_state.viser_server.add_point_cloud(
+            '/means_ptcld',
+            points=gaussian_means_ptcld * 10,
+            colors=colors,
+            point_size=0.3,
+        )
+        
         if len(boxes) > 0:
             # Change detected!
-            # self.viewer_state.viser_server.add_point_cloud(
-            #     '/pointcloud',
-            #     points=points_tr.vertices, # * 10,
-            #     colors=points_tr.visual.vertex_colors[:, :3],
-            #     point_size = 1.0
-            # )
+            self.viewer_state.viser_server.add_point_cloud(
+                '/pointcloud',
+                points=points_tr.vertices * 10,
+                colors=points_tr.visual.vertex_colors[:, :3],
+            )
             
             for obox_ind, obox in enumerate(boxes):
                 import trimesh
                 bbox = trimesh.creation.box(
-                    extents=obox.S.cpu().numpy()# *10
+                    extents=obox.S.cpu().numpy() * 10
                 )
                 bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
                     f"/bbox_{obox_ind}",
                     bbox,
+                    # scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale,
                     wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
-                    position=obox.T.cpu().numpy()# *10,
+                    position=obox.T.cpu().numpy() * 10,
                 )
                 print("just visualized the box.")
 
                 affected_gaussians_idxs = self.pipeline.bbox2gaussians(obox)
+                inside = obox.within(self.pipeline.model.means)
                 # print(affected_gaussians_idxs.shape, self.pipeline.model.means.shape)
                 # self.pipeline.model.means = Parameter(self.pipeline.model.means[~affected_gaussians_idxs].detach())
             self.diff_wait_counter = 5
 
-            import pdb; pdb.set_trace()
-            print(affected_gaussians_idxs)
+            print(poses, affected_gaussians_idxs)
         # TODO: mask out regions in all training images
 
     # @profile
@@ -836,7 +845,7 @@ class Trainer:
                 
 
                 with self.train_lock:
-                    if step > 3*self.pipeline.model.config.warmup_length:
+                    if step > 5*self.pipeline.model.config.warmup_length:
                         while len(self.query_diff_queue) > self.query_diff_size:
                             self.process_query_diff(self.query_diff_queue.pop(0), step)
 
@@ -909,8 +918,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                # if step_check(step, self.config.steps_per_save):
-                #     self.save_checkpoint(step)
+                if step_check(step, self.config.steps_per_save):
+                    self.save_checkpoint(step)
 
                 writer.write_out_storage()
 

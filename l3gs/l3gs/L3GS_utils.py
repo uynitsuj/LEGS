@@ -70,11 +70,12 @@ class Utils:
         components = []
         h, w = mask.shape
         
-        def dfs(y, x, component_mask):
-            if y < 0 or y >= h or x < 0 or x >= w or visited[y, x] or mask[y, x] == 0:
+        def dfs(y, x, component_mask, visited_set):
+            if y < 0 or y >= h or x < 0 or x >= w or visited[y, x] or mask[y, x] == 0 or (y, x) in visited_set:
                 return
             
             visited[y, x] = True
+            visited_set.add((y, x))
             component_mask[y, x] = 1
             
             for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
@@ -83,8 +84,9 @@ class Utils:
         for y in range(h):
             for x in range(w):
                 if mask[y, x] == 1 and not visited[y, x]:
+                    visited_set = set()
                     component_mask = torch.zeros_like(mask)
-                    dfs(y, x, component_mask)
+                    dfs(y, x, component_mask, visited_set)
                     components.append(component_mask)
                     
         return components

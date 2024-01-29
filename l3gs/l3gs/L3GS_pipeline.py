@@ -148,7 +148,7 @@ class L3GSPipeline(VanillaPipeline):
         local_rank: int = 0,
         grad_scaler: Optional[GradScaler] = None,
         highres_downscale : float = 4.0,
-        use_clip : bool = False,
+        use_clip : bool = True,
         model_name : str = "dino_vits8",
         # dino_thres : float = 0.4, 
         clip_out_queue : Optional[mp.Queue] = None,
@@ -279,29 +279,45 @@ class L3GSPipeline(VanillaPipeline):
         if self.use_clip:
             heat_map, heatmap_mask_cleaned, gsplat_outputs = self.query_diff_clip(image, pose, step)
         elif self.use_rgb:
-            heat_map, heatmap_mask_cleaned, gsplat_outputs = self.query_diff_rgb(image, pose, step)
+            heat_map, heatmap_mask_cleaned, gsplat_outputs = self.query_diff_rgb(image, depth, pose, step)
         return heat_map, heatmap_mask_cleaned, gsplat_outputs
 
-    def query_diff_clip(self, image: torch.Tensor, pose: Cameras, step, image_scale: float = 0.25, vis_verbose: bool = False):
+    def query_diff_clip(self, image: torch.Tensor, pose: Cameras, step, image_scale: float = 0.25, thres: float = 0.5, vis_verbose: bool = False):
         gsplat_outputs = self.model.get_outputs(pose.to(self.device))
-        gsplat_clip_output = gsplat_outputs['clip']
+        if 'clip' not in gsplat_outputs.keys():
+            return torch.zeros_like(image), torch.zeros_like(image), gsplat_outputs
+        
+        clip_output = gsplat_outputs['clip']
+        plt.imsave('clip_output.png', clip_output.detach().cpu().numpy())
+        plt.imsave('clip_ground_truth.png', image.detach().cpu().numpy())
+        diff = torch.norm(clip_output - image, dim=-1)
+        plt.imsave('clip_diff.png', diff.detach().cpu().numpy())
+        diff_bool = diff > thres
+        plt.imsave('clip_diff_bool.png', diff_bool.detach().cpu().numpy())
+        kernel = np.ones((3, 3), np.uint8)
+        diff_bool_eroded = cv2.erode(diff_bool.cpu().numpy().astype(np.uint8), kernel, iterations=1)
+        diff_bool_cleaned = cv2.dilate(diff_bool_eroded, kernel, iterations=1)
+        diff_bool_cleaned = torch.from_numpy(diff_bool_cleaned).to(self.device)
+        plt.imsave('clip_diff_bool_cleaned.png', diff_bool_cleaned.cpu().detach().numpy())
+        
 
         rendered_image = gsplat_outputs['rgb']
         rendered_embeds, rendered_points = get_2d_embeds(rendered_image, image_scale, self)
+        import pdb; pdb.set_trace()
 
         im_h, im_w, _ = image.shape
         r_res, c_res = im_h * image_scale, im_w * image_scale
         image_coords = torch.stack(torch.meshgrid(torch.arange(0, im_h, r_res), torch.arange(0,im_w,c_res)), dim=-1).cuda().long()
         image_embeds, image_points = get_2d_embeds(image, image_scale, self)
 
-        shift = gsplat_clip_output - rendered_embeds
+        shift = clip_output - rendered_embeds
         shifted_embeds = image_embeds + shift
         shifted_embeds = shifted_embeds / shifted_embeds.norm(dim=-1, keepdim=True)
-        baselined_diff = -torch.einsum('ijk,ijk->ij', shifted_embeds, gsplat_clip_output)
+        baselined_diff = -torch.einsum('ijk,ijk->ij', shifted_embeds, clip_output)
 
         if vis_verbose:
             fig, axes = plt.subplots(1, 2)
-            axes[0].imshow(-torch.einsum('ijk,ijk->ij', rendered_embeds, gsplat_clip_output).detach().cpu().numpy())
+            axes[0].imshow(-torch.einsum('ijk,ijk->ij', rendered_embeds, clip_output).detach().cpu().numpy())
             axes[0].set_title("not-baselined diff")
             axes[1].imshow(baselined_diff.detach().cpu().numpy())
             axes[1].set_title("baselined diff")
@@ -309,10 +325,10 @@ class L3GSPipeline(VanillaPipeline):
 
         return baselined_diff, gsplat_outputs
     
-    def query_diff_rgb(self, image: torch.Tensor, pose: Cameras, step, vis_verbose: bool = False, thres: float = 0.5):
+    def query_diff_rgb(self, image: torch.Tensor, depth: torch.Tensor, pose: Cameras, step, vis_verbose: bool = False, thres: float = 0.5):
         gsplat_outputs = self.model.get_outputs(pose.to(self.device))
-        rgb_output = gsplat_outputs['rgb']
         
+        rgb_output = gsplat_outputs['rgb']
         plt.imsave('rgb_output.png', rgb_output.detach().cpu().numpy())
         plt.imsave('image.png', image.detach().cpu().numpy())
         diff = torch.norm(rgb_output - image, dim=-1)
@@ -324,6 +340,18 @@ class L3GSPipeline(VanillaPipeline):
         diff_bool_cleaned = cv2.dilate(diff_bool_eroded, kernel, iterations=1)
         diff_bool_cleaned = torch.from_numpy(diff_bool_cleaned).to(self.device)
         plt.imsave('diff_bool_cleaned.png', diff_bool_cleaned.cpu().detach().numpy())
+
+        # depth_output = gsplat_outputs['depth'].squeeze(2)
+        # plt.imsave('depth_output.png', depth_output.detach().cpu().numpy())
+        # diff = torch.norm(depth_output - depth, dim=-1)
+        # plt.imsave('depth_diff.png', diff.detach().cpu().numpy())
+        # diff_bool = diff > thres
+        # plt.imsave('depth_diff_bool.png', diff_bool.detach().cpu().numpy())
+        # kernel = np.ones((3, 3), np.uint8)
+        # diff_bool_eroded = cv2.erode(diff_bool.cpu().numpy().astype(np.uint8), kernel, iterations=1)
+        # diff_bool_cleaned = cv2.dilate(diff_bool_eroded, kernel, iterations=1)
+        # diff_bool_cleaned = torch.from_numpy(diff_bool_cleaned).to(self.device)
+        # plt.imsave('depth_diff_bool_cleaned.png', diff_bool_cleaned.cpu().detach().numpy())
         
         if vis_verbose:
             fig, ax = plt.subplots(1, 4)
@@ -334,28 +362,114 @@ class L3GSPipeline(VanillaPipeline):
             plt.show()
 
         return diff, diff_bool_cleaned, gsplat_outputs
-
-    def heatmaps2gaussians(self, heatmap_masks, gsplat_outputs, poses, depths, images):
-        # look at depth where heatmap is activated, find corresponding gaussians?
-        #   then how to mask out volumes? do we replace all affected gaussians?
-
-        assert len(heatmap_masks) == len(depths) == len(poses), "length must be equal"
-        distance_thresh = 1.0 # TODO: figure out this threshold
-        affected_gaussians_idxs = None
-
-        for hm, go, pose, depth, im in zip(heatmap_masks, gsplat_outputs, poses, depths, images):
-            masked_depth = depth * hm.float()
-            while len(masked_depth.shape) < 4:
-                masked_depth = masked_depth.unsqueeze(0)
-            deprojected, _ = U.deproject_to_RGB_point_cloud(im, masked_depth, pose, self.datamanager.train_dataparser_outputs.dataparser_scale)
-            # to_flag = torch.where(torch.abs(self.model.means - deprojected) < distance_thresh)
-            distances = cdist(self.model.means.detach().cpu().numpy(), deprojected.cpu())
-            distances = torch.from_numpy(distances[:,0]).cuda()
-            affected_gaussians_idxs = torch.where(distances < distance_thresh)
-
-        return affected_gaussians_idxs[0]
     
     def heatmaps2box(self, 
+        heatmaps: List[torch.Tensor], # list of boolean tensors (HxW)
+        heatmap_masks: List[torch.Tensor], # list of boolean tensors (HxW)
+        images: List[torch.Tensor],
+        poses: List[Cameras], 
+        depths: List[torch.Tensor], # Nerfstudio depth (distance-depth)
+        depth_distance: List[torch.Tensor], # Realsense depth (z-depth) converted to nerfstudio depth (distance-depth)
+        gsplat_outputs_list: List[Dict[str, torch.Tensor]],
+        nms : float = None, # apply nms
+    ) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor]], trimesh.PointCloud]:
+        
+        assert len(heatmaps) == len(depths) == len(poses), "length must be equal"
+        assert len(heatmaps) == 1, "length must be 1"
+
+        hm, hm_mask, image, pose, depth, gsplat_output = heatmaps[0], heatmap_masks[0], images[0], poses[0], depths[0], gsplat_outputs_list[0]
+        if torch.sum(hm) == 0:
+            return [], []
+        
+        components = U.get_connected_components(hm_mask)
+        if len(components) == 0:
+            return [], []
+        
+        largest_component_idx = torch.argmax(torch.tensor([torch.sum(comp) for comp in components]))
+        component = components[largest_component_idx]
+
+        plt.imsave('component.png', component.detach().cpu().numpy())
+        plt.imsave('depth.png', depth.detach().cpu().numpy())
+        plt.imsave('rendered_depth.png', gsplat_output['depth'].squeeze(2).detach().cpu().numpy())
+
+        # depth = depth * self.datamanager.train_dataparser_outputs.dataparser_scale
+        depth = gsplat_output['depth'].squeeze(2) / self.datamanager.train_dataparser_outputs.dataparser_scale
+
+        depth = depth * component
+        while len(depth.shape) < 4:
+            depth = depth.unsqueeze(0)
+        included_points, _ = U.deproject_to_RGB_point_cloud(image, depth, pose, 
+            self.datamanager.train_dataparser_outputs.dataparser_scale, sampling=False)
+        included_points_color = torch.ones_like(included_points)
+
+        # check for outlier rejection
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(included_points.detach().cpu().numpy())
+        pcd.colors = o3d.utility.Vector3dVector(included_points_color.detach().cpu().numpy())
+        pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=5, std_ratio=0.01)
+        intvector = pcd.cluster_dbscan(eps=0.5, min_points=8, print_progress=False)
+        intvector = np.asarray(intvector)
+
+        if len(np.unique(intvector)) == 1 and intvector[0] == -1:
+            return [], []
+        if len(np.unique(intvector)) == 1: # only one cluster, not noise (intvector == 0)
+            assert intvector[0] == 0
+            points = torch.from_numpy(np.asarray(pcd.points))[intvector == 0]
+            points_tr = trimesh.PointCloud(points.numpy())
+            points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector == 0]
+        elif len(np.unique(intvector)) == 2: # only one cluster, and noise (intvector == -1)
+            points = torch.from_numpy(np.asarray(pcd.points))[intvector != -1]
+            points_tr = trimesh.PointCloud(points.numpy())
+            points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector != -1]
+        else:
+            # choose the largest cluster that is not -1
+            cluster_sizes = []
+            for i in range(np.unique(intvector).shape[0] - 1): # ignore -1
+                cluster_sizes.append(np.sum(intvector == i))
+            cluster_sizes = np.asarray(cluster_sizes)
+            chosen_cluster = np.argmax(cluster_sizes)
+            points = torch.from_numpy(np.asarray(pcd.points))[intvector == chosen_cluster]
+            points_tr = trimesh.PointCloud(points.numpy())
+            points_tr.visual.vertex_colors = np.asarray(pcd.colors)[intvector == chosen_cluster]
+
+        # construct new pcd with only the largest cluster
+        second_pcd = o3d.geometry.PointCloud()
+        second_pcd.points = o3d.utility.Vector3dVector(included_points.detach().cpu().numpy())
+        second_pcd.colors = o3d.utility.Vector3dVector(included_points_color.detach().cpu().numpy())
+        second_pcd, ind = second_pcd.remove_statistical_outlier(nb_neighbors=5, std_ratio=0.01)
+        second_intvector = second_pcd.cluster_dbscan(eps=0.5, min_points=8, print_progress=False)
+        second_intvector = np.asarray(second_intvector)
+
+        if len(np.unique(second_intvector)) == 1 and second_intvector[0] == -1:
+            return [], []
+
+        list_of_boxes = []
+        for i in np.unique(second_intvector): # ignore -1
+            if i == -1:
+                continue
+            points = torch.from_numpy(np.asarray(second_pcd.points))[second_intvector == i]
+            points_proj = points.clone()
+            
+            obox = OrientedBox.from_points(points_proj, device=self.device)
+
+            # OrientedBox.from_points uses PCA to find the orientation of the box, so 
+            # the first component is aligned with the z-axis of the scene (because it's the largest variance)
+            # obox.T[2] = 0
+            # obox.S[0] = 0
+            
+            # obox_3d = OrientedBox(
+            #     R=obox.R,
+            #     T=obox.T + torch.Tensor([0, 0, torch.mean(points[:, 2])]).to(self.device),
+            #     S=(obox.S + torch.Tensor([torch.max(points[:, 2]) - torch.min(points[:, 2]), 0, 0]).to(self.device)) * 1.5,
+            # )
+            # obox.S *= self.datamanager.train_dataparser_outputs.dataparser_scale
+            # obox.R, obox.T, obox.S = obox.R, obox.T / 10., obox.S / 10.
+            list_of_boxes.append(obox)
+
+        points = sum([points_tr], trimesh.PointCloud(vertices=np.array([[0, 0, 0]])))
+        return list_of_boxes, points
+
+    def heatmaps2box_old(self, 
         heatmaps: List[torch.Tensor], # list of boolean tensors (HxW)
         heatmap_masks: List[torch.Tensor], # list of boolean tensors (HxW)
         images: List[torch.Tensor],
@@ -378,50 +492,24 @@ class L3GSPipeline(VanillaPipeline):
             largest_component_idx = torch.argmax(torch.tensor([torch.sum(comp) for comp in components]))
             component = components[largest_component_idx]
 
-            # Get pixel indices where the heatmap is non-zero
-            # import pdb; pdb.set_trace()
-            # NOTE(cmk): this is depth thresholding in nerfstudio space,
-            # where the depth has already been scaled s.t. the region scanned already
-            # should fit into the unit cube. All the points that should be checked for
-            # the diff should be less than 1.0 in depth away...
-            # depth_threshold = 1.0
-            # mask = component & ((l_output['depth'][::4, ::4] < depth_threshold).squeeze() | (d_distance[::16, ::16] < depth_threshold)).squeeze()
-            # if mask.sum() == 0:
-            #     continue
-            # # included_points = lerf_outputs['pointcloud'][::4, ::4][mask]
-            # p_copy = deepcopy(p).to(self.device)
-            # p_copy.rescale_output_resolution(1/4.0)
-            # camera_ray_bundle = p_copy.generate_rays(camera_indices=0)
-
-            # d_distance[d_distance == 0] = 1000
-            # closer_depth = torch.where(
-            #     (l_output['depth'].squeeze() < d_distance[::4, ::4]), 
-            #     l_output['depth'].squeeze(), 
-            #     d_distance[::4, ::4]
-            #     )
-            # included_points = camera_ray_bundle.origins + camera_ray_bundle.directions * closer_depth.unsqueeze(-1)
-            # # included_points = included_points[::4, ::4][mask]
-            # included_points = included_points[torch.repeat_interleave(torch.repeat_interleave(mask, 4, dim=0), 4, dim=1)]
-            # included_points_color = l_output['rgb'][torch.repeat_interleave(torch.repeat_interleave(mask, 4, dim=0), 4, dim=1)]
-
-            # included_points = torch.where(component > 0) * depth
-
             plt.imsave('component.png', component.detach().cpu().numpy())
             plt.imsave('depth.png', depth.detach().cpu().numpy())
+            plt.imsave('rendered_depth.png', l_output['depth'].squeeze(2).detach().cpu().numpy())
             component_mask = torch.where(component > 0)
 
-            # depth = depth * self.datamanager.train_dataparser_outputs.dataparser_scale / 10.
-            depth = l_output['depth'].squeeze(2) / 10.
+            # depth = depth * self.datamanager.train_dataparser_outputs.dataparser_scale
+            depth = l_output['depth'].squeeze(2)
 
             # included_points = torch.stack([*component_mask, depth[component_mask]], dim=-1)
-            masked_depth = depth * component
-            import pdb; pdb.set_trace()
-            while len(masked_depth.shape) < 4:
-                masked_depth = masked_depth.unsqueeze(0)
-            included_points, _ = U.deproject_to_RGB_point_cloud(image, masked_depth, pose, self.datamanager.train_dataparser_outputs.dataparser_scale, sampling=False)
+            depth = depth * component
+            while len(depth.shape) < 4:
+                depth = depth.unsqueeze(0)
+            included_points, _ = U.deproject_to_RGB_point_cloud(image, depth, pose, 
+                self.datamanager.train_dataparser_outputs.dataparser_scale, sampling=False)
 
-            included_points_color = l_output['rgb'][component_mask]
-            # import pdb; pdb.set_trace()
+            # included_points_color = l_output['rgb'][component_mask]
+            # included_points_color = image[component_mask]
+            included_points_color = torch.ones_like(included_points)
 
             min_corner = torch.min(included_points, dim=0).values
             max_corner = torch.max(included_points, dim=0).values
@@ -431,7 +519,7 @@ class L3GSPipeline(VanillaPipeline):
             pcd.points = o3d.utility.Vector3dVector(included_points.detach().cpu().numpy())
             pcd.colors = o3d.utility.Vector3dVector(included_points_color.detach().cpu().numpy())
             pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=5, std_ratio=0.01)
-            intvector = pcd.cluster_dbscan(eps=5, min_points=10, print_progress=False)
+            intvector = pcd.cluster_dbscan(eps=0.5, min_points=8, print_progress=False)
             intvector = np.asarray(intvector)
 
             # import pdb; pdb.set_trace()
@@ -468,7 +556,7 @@ class L3GSPipeline(VanillaPipeline):
         agg_pcd = o3d.geometry.PointCloud()
         agg_pcd.points = o3d.utility.Vector3dVector(agg_points_tr.vertices)
         agg_pcd.colors = o3d.utility.Vector3dVector(agg_points_tr.visual.vertex_colors[:, :3])
-        intvector = agg_pcd.cluster_dbscan(eps=5, min_points=10, print_progress=False)
+        intvector = agg_pcd.cluster_dbscan(eps=0.5, min_points=8, print_progress=False)
         intvector = np.asarray(intvector)
 
         if len(np.unique(intvector)) == 1 and intvector[0] == -1:
@@ -483,7 +571,7 @@ class L3GSPipeline(VanillaPipeline):
                 continue
 
             points_proj = points.clone()
-            points_proj[:, 2] = torch.rand(points_proj.shape[0]) * 0.05
+            # points_proj[:, 2] = torch.rand(points_proj.shape[0]) * 0.05
             # points_proj = torch.cat([points_proj, points_proj + torch.Tensor([0, 0, 10.0])], dim=0)
 
             #### OrientedBox
@@ -491,16 +579,17 @@ class L3GSPipeline(VanillaPipeline):
 
             # OrientedBox.from_points uses PCA to find the orientation of the box, so 
             # the first component is aligned with the z-axis of the scene (because it's the largest variance)
-            obox.T[2] = 0
-            obox.S[0] = 0
-
+            # obox.T[2] = 0
+            # obox.S[0] = 0
             
-            obox_3d = OrientedBox(
-                R=obox.R,
-                T=obox.T + torch.Tensor([0, 0, torch.mean(points[:, 2])]).to(self.device),
-                S=(obox.S + torch.Tensor([torch.max(points[:, 2]) - torch.min(points[:, 2]), 0, 0]).to(self.device)) * 1.5,
-            )
-            list_of_boxes.append(obox_3d)
+            # obox_3d = OrientedBox(
+            #     R=obox.R,
+            #     T=obox.T + torch.Tensor([0, 0, torch.mean(points[:, 2])]).to(self.device),
+            #     S=(obox.S + torch.Tensor([torch.max(points[:, 2]) - torch.min(points[:, 2]), 0, 0]).to(self.device)) * 1.5,
+            # )
+            # obox.S *= self.datamanager.train_dataparser_outputs.dataparser_scale
+            # obox.R, obox.T, obox.S = obox.R, obox.T / 10., obox.S / 10.
+            list_of_boxes.append(obox)
             #### end OrientedBox
 
             #### SceneBox
