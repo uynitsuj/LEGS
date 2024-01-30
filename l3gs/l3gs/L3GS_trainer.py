@@ -137,7 +137,11 @@ class TrainerNode(Node):
 
     def add_img_callback(self,msg):
         print("Appending imagepose to queue",flush=True)
-        self.trainer_.image_add_callback_queue.append(msg)
+        self.trainer_.image_add_callback_queue.append(msg.image_poses[0])
+
+        # self.trainer_.image_add_callback_queue.append(msg.image_poses[1])
+
+        self.trainer_.image_add_callback_queue.append(msg.image_poses[2])
 
 
 class Trainer:
@@ -353,7 +357,7 @@ class Trainer:
         # print('self.imgidx: ' + str(self.imgidx))
         # # CONSOLE.print("Adding image to dataset")
         # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'bgr8'),dtype = torch.float32)/255.
         # # By default the D4 VPU provides 16bit depth with a depth unit of 1000um (1mm).
         # # --> depth_data is in meters.
         # depth_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
@@ -450,15 +454,30 @@ class Trainer:
         # start = time.time()
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'bgr8'),dtype = torch.float32)/255.
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
         cx = torch.tensor([msg.cx])
+        # new_W = 640
+        # new_H = 360
+        crop_top = 60
+        crop_bottom = 480 - 60
+        if msg.w != msg.img.width or msg.h != msg.img.height:
+            # crop image_data to new_W new_H centered
+            image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
+            # print('after croppping', image_data.shape)
+            import torch.nn.functional as F
+            image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
+            # back to HxWxC
+            image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
+            # print('after resize', image_data.shape)
+
         # cx = torch.tensor([msg.cy])
         # cy = torch.tensor([msg.cx])
-        width = torch.tensor([msg.w])
-        height = torch.tensor([msg.h])
+        width = torch.tensor([msg.img.width])
+        height = torch.tensor([msg.img.height])
+        # print(width, height)
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
         c = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
@@ -485,7 +504,7 @@ class Trainer:
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
-                    position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO # SCALE,
+                    position=c2w[:3, 3] #* VISER_NERFSTUDIO_SCALE_RATIO # SCALE,
                 )
         
         @camera_handle.on_click
@@ -495,10 +514,10 @@ class Trainer:
                 event.client.camera.wxyz = event.target.wxyz
         self.viewer_state.camera_handles[cidx] = camera_handle
         self.viewer_state.original_c2w[cidx] = c2w
-        project_interval = 4
+        project_interval = 3
         # print('process idx: ' + str(idx))
 
-        if self.done_scale_calc and msg.depth is not None and idx % project_interval == 0:
+        if self.done_scale_calc and msg.depth.encoding != '' and idx % project_interval == 0:
             depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
             depth = depth.unsqueeze(0).unsqueeze(0)
             if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
@@ -508,7 +527,7 @@ class Trainer:
             self.deprojected_queue.extend(deprojected)
             self.colors_queue.extend(colors)
 
-        elif self.done_scale_calc and msg.depth is None and idx % project_interval == 0:
+        if self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
             depth = self.pipeline.monodepth_inference(image_data.numpy())
             # depth = torch.rand((1,1,480,640))
             deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
@@ -657,29 +676,28 @@ class Trainer:
             msgs=None
             
             while True:
-                if self.imgidx % 3 == 0:
-                    rclpy.spin_once(trainer_node,timeout_sec=0.00)
+                # if self.imgidx % 3 == 0:
+                rclpy.spin_once(trainer_node,timeout_sec=0.00)
+
                 has_image_add = len(self.image_add_callback_queue) > 0
                 if has_image_add:
                     #Not sure if we want to loop till the queue is empty or not
-                    msgs = self.image_add_callback_queue.pop(0)
-                if msgs is not None:
+                    msg = self.image_add_callback_queue.pop(0)
+
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
                     if self.calculate_diff:
                         # TODO: Kishore and Justin
                         raise NotImplementedError
+                        # for msg in msgs:
+                        #     self.query_diff_queue.append(msg)
+
                     else:
-                        msg = msgs.image_poses[self.imgidx % 3]
-                        # for msg in msgs.image_poses:
-                            # import pdb; pdb.set_trace()
                         self.add_img_callback(msg)
                         self.image_process_queue.append(msg)
                         self.imgidx += 1
 
                     if not self.done_scale_calc:
-                        msg = msgs.image_poses[self.imgidx % 3]
-                        # for msg in msgs.image_poses:
                         parser_scale_list.append(msg.pose)
 
                 # random_list = []
@@ -711,7 +729,7 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<15):
+                elif not self.done_scale_calc and (len(parser_scale_list)<5):
                     time.sleep(0.01)
                     continue
 
@@ -1025,7 +1043,7 @@ class Trainer:
             # elapsed = str((end-start)*1e3)
             # print("get_train_loss time: "+ elapsed + "(ms)")
             loss = functools.reduce(torch.add, loss_dict.values())
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [
             group

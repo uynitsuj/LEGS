@@ -30,7 +30,7 @@ class L3GSDataParserConfig(DataParserConfig):
     """ SceneBox aabb scale."""
     num_images: int = 1000
     img_height: int = 480
-    img_width: int = 640
+    img_width: int = 848
 
 
 @dataclass
