@@ -706,7 +706,7 @@ class Trainer:
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
         else:
-            project_interval = 8
+            project_interval = 6
             if self.done_scale_calc and msg.depth.encoding != '' and idx % project_interval == 0:
                 depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
                 depth = depth.unsqueeze(0).unsqueeze(0)
@@ -717,12 +717,12 @@ class Trainer:
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
 
-            elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
-                depth = self.pipeline.monodepth_inference(image_data.numpy())
-                # depth = torch.rand((1,1,480,640))
-                deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
-                self.deprojected_queue.extend(deprojected)
-                self.colors_queue.extend(colors)
+            # elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
+            #     depth = self.pipeline.monodepth_inference(image_data.numpy())
+            #     # depth = torch.rand((1,1,480,640))
+            #     deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+            #     self.deprojected_queue.extend(deprojected)
+            #     self.colors_queue.extend(colors)
             
         # print("Time inside process image:", time.time() - start)
             # import pdb; pdb.set_trace()
