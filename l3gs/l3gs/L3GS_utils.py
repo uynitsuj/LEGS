@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 class Utils:
     # @profile
@@ -7,7 +8,6 @@ class Utils:
         Converts a depth image into a point cloud in world space using a Camera object.
         """
         
-        # import pdb; pdb.set_trace()
         # c2w = camera.camera_to_worlds.cpu()
         # depth_image = depth_image.cpu()
         # image = image.cpu()
@@ -64,8 +64,21 @@ class Utils:
         P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
         
         return P_world[:, :3], sampled_image
-
+    
     def get_connected_components(mask):
+        from scipy.ndimage.measurements import label
+        structure = np.array([
+            [0, 1, 0],
+            [1, 1, 1],
+            [0, 1, 0]
+        ])
+        labeled, ncomponents = label(mask.detach().cpu().numpy(), structure)
+        components = []
+        for idx in np.unique(labeled)[1:]:
+            components.append(torch.tensor(labeled == idx, dtype=torch.int8))
+        return components
+
+    def get_connected_components_old(mask):
         visited = torch.zeros_like(mask, dtype=torch.bool)
         components = []
         h, w = mask.shape
@@ -79,7 +92,7 @@ class Utils:
             component_mask[y, x] = 1
             
             for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                dfs(y + dy, x + dx, component_mask)
+                dfs(y + dy, x + dx, component_mask, visited_set)
 
         for y in range(h):
             for x in range(w):

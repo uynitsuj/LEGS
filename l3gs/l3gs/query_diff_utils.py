@@ -383,7 +383,6 @@ def get_diff_attn_maps(
     assert original_attns.shape == updated_attns.shape, "Attention maps must be the same shape"
     attns_1 = normalize(np.sum(original_attns, axis=0)) > thres
     attns_2 = normalize(np.sum(updated_attns, axis=0)) > thres
-    # import pdb; pdb.set_trace()
     fig, ax = plt.subplots(2)
     ax[0].imshow(normalize(np.sum(original_attns, axis=0)))
     ax[1].imshow(normalize(np.sum(updated_attns, axis=0)))
@@ -402,7 +401,6 @@ def get_diff_attn_maps(
     # ax[5].imshow(bool_mask)
     # plt.show()
     original = bool_mask.copy()
-    # import pdb; pdb.set_trace()
     
     erosion_kernel_size = 5
     dialation_kernel_size = 70
@@ -432,7 +430,6 @@ def get_diff_attn_maps(
     # ax[8].imshow(normalize(np.sum(updated_attns, axis=0)))
     # plt.show()
 
-    # import pdb; pdb.set_trace()
 
     if return_attns: 
         raise NotImplementedError

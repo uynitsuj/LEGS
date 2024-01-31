@@ -210,6 +210,7 @@ class Trainer:
         self.deprojected_queue = deque()
         self.colors_queue = deque()
         self.train_lerf = False
+        self.begin_differencing = False
         self.diff_wait_counter = 0
 
 
@@ -342,6 +343,10 @@ class Trainer:
         print("Training LERF")
         self.train_lerf = True
 
+    def handle_begin_differencing(self, handle: ViewerButton):
+        print('Calculating diff')
+        self.begin_differencing = True
+
 
     def add_img_callback(self, msg:ImagePose, decode_only=False):
         '''
@@ -388,7 +393,8 @@ class Trainer:
         if self.diff_wait_counter > 0:
             return
         
-        heatmaps, heatmap_masks, gsplat_outputs_list, poses, depths, images = [], [], [], [], [], []
+        rgb_heatmaps, rgb_heatmap_masks, clip_heatmaps, clip_heatmap_masks, gsplat_outputs_list = [], [], [], [], []
+        poses, depths, images = [], [], []
 
         c2w = ros_pose_to_nerfstudio(msg.pose)
         H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
@@ -403,34 +409,48 @@ class Trainer:
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
         cx = torch.tensor([msg.cx])
-        # cx = torch.tensor([msg.cy])
-        # cy = torch.tensor([msg.cx])
         width = torch.tensor([msg.w])
         height = torch.tensor([msg.h])
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
         pose = Cameras(c2w, fx, fy, cx, cy, width, height, distortion_params, camera_type)
         pose.camera_type = pose.camera_type.unsqueeze(0)
+        clip_downscale_factor = self.pipeline.datamanager.config.clip_downscale_factor
+        pose.metadata = {'clip_downscale_factor': clip_downscale_factor}
 
-        heat_map, cleaned_heatmap_mask, gsplat_outputs = self.pipeline.query_diff(image, pose, depth, step, vis_verbose = self.pipeline.plot_verbose)
-        # import pdb; pdb.set_trace()
-        # if self.pipeline.use_clip:
-        #     heat_map_mask = heat_map > -0.85
-        # else:
-        #     heat_map_mask = heat_map
-
-        heatmaps.append(heat_map)
-        heatmap_masks.append(cleaned_heatmap_mask)
-        gsplat_outputs_list.append(gsplat_outputs)
         images.append(image)
         poses.append(pose)
         depths.append(depth)
-        images.append(image)
 
-        # affected_gaussians_idxs = self.pipeline.heatmaps2gaussians(heatmap_masks, gsplat_outputs_list, poses, depths, images)
+        rgb_heat_map, rgb_cleaned_heatmap_mask, gsplat_outputs = self.pipeline.query_diff_rgb(image, pose, vis_verbose = self.pipeline.plot_verbose)
+        rgb_heatmaps.append(rgb_heat_map)
+        rgb_heatmap_masks.append(rgb_cleaned_heatmap_mask)
+        gsplat_outputs_list.append(gsplat_outputs)
+
+        print(">>> using clip:", self.pipeline.use_clip)
+        if self.pipeline.use_clip:
+            image_scale = torch.tensor([0.25]).to(self.device)
+            # im_h, im_w, _ = image.shape
+            # r_res, c_res = im_h * image_scale, im_w * image_scale
+            # image_coords = torch.stack(torch.meshgrid(torch.arange(0, im_h, r_res), torch.arange(0, im_w, c_res)), dim=-1).cuda().long()
+            # clip_ground_truth_image = self.datamanager.clip_interpolator(image_coords, image_scale)
+            
+            H, W = image.shape[:2]
+            scaled_height = H // clip_downscale_factor
+            scaled_width = W // clip_downscale_factor
+            
+            x = torch.arange(0, scaled_width * clip_downscale_factor, clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
+            y = torch.arange(0, scaled_height * clip_downscale_factor, clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
+            image_idx_tensor = torch.ones(scaled_height, scaled_width, 1) * 20
+            positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
+
+            clip_ground_truth_image, clip_scale = self.pipeline.datamanager.clip_interpolator(positions, image_scale)
+            clip_heat_map, clip_cleaned_heatmap_mask, gsplat_outputs = self.pipeline.query_diff_clip(clip_ground_truth_image, pose, image_scale = image_scale, vis_verbose = self.pipeline.plot_verbose)
+            clip_heatmaps.append(clip_heat_map)
+            clip_heatmap_masks.append(clip_cleaned_heatmap_mask)
+            gsplat_outputs_list = gsplat_outputs_list[:-1]
+            gsplat_outputs_list.append(gsplat_outputs)
         
-        boxes, points_tr = self.pipeline.heatmaps2box(heatmaps, heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
-
         gaussian_means_ptcld = self.pipeline.model.means.detach().cpu().numpy()
         colors = np.ones_like(gaussian_means_ptcld)
         self.viewer_state.viser_server.add_point_cloud(
@@ -440,35 +460,62 @@ class Trainer:
             point_size=0.3,
         )
         
-        if len(boxes) > 0:
+        rgb_boxes, rgb_points_tr = self.pipeline.heatmaps2box(rgb_heatmaps, rgb_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
+        if len(rgb_boxes) > 0:
             # Change detected!
             self.viewer_state.viser_server.add_point_cloud(
-                '/pointcloud',
-                points=points_tr.vertices * 10,
-                colors=points_tr.visual.vertex_colors[:, :3],
+                '/rgb_diff_ptcld',
+                points=rgb_points_tr.vertices * 10,
+                colors=rgb_points_tr.visual.vertex_colors[:, :3],
             )
             
-            for obox_ind, obox in enumerate(boxes):
+            for obox_ind, obox in enumerate(rgb_boxes):
                 import trimesh
                 bbox = trimesh.creation.box(
                     extents=obox.S.cpu().numpy() * 10
                 )
                 bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
-                    f"/bbox_{obox_ind}",
+                    f"/rgb_bbox_{obox_ind}",
                     bbox,
                     # scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale,
                     wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
                     position=obox.T.cpu().numpy() * 10,
                 )
                 print("just visualized the box.")
-
                 affected_gaussians_idxs = self.pipeline.bbox2gaussians(obox)
-                inside = obox.within(self.pipeline.model.means)
-                # print(affected_gaussians_idxs.shape, self.pipeline.model.means.shape)
-                # self.pipeline.model.means = Parameter(self.pipeline.model.means[~affected_gaussians_idxs].detach())
-            self.diff_wait_counter = 5
 
-            print(poses, affected_gaussians_idxs)
+            self.diff_wait_counter = 5
+            print('RGB:', affected_gaussians_idxs)
+
+        print(">>> using clip (heatmap):", self.pipeline.use_clip)
+        if self.pipeline.use_clip:
+            clip_boxes, clip_points_tr = self.pipeline.heatmaps2box(clip_heatmaps, clip_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
+            if len(clip_boxes) > 0:
+                # Change detected!
+                self.viewer_state.viser_server.add_point_cloud(
+                    '/clip_diff_ptcld',
+                    points=clip_points_tr.vertices * 10,
+                    colors=clip_points_tr.visual.vertex_colors[:, :3],
+                )
+                
+                for obox_ind, obox in enumerate(clip_boxes):
+                    import trimesh
+                    bbox = trimesh.creation.box(
+                        extents=obox.S.cpu().numpy() * 10
+                    )
+                    bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
+                        f"/clip_bbox_{obox_ind}",
+                        bbox,
+                        # scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale,
+                        wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
+                        position=obox.T.cpu().numpy() * 10,
+                    )
+                    print("just visualized the box.")
+                    affected_gaussians_idxs = self.pipeline.bbox2gaussians(obox)
+                    
+                self.diff_wait_counter = 5
+                print('CLIP:', affected_gaussians_idxs)
+        
         # TODO: mask out regions in all training images
 
     # @profile
@@ -477,7 +524,6 @@ class Trainer:
         Converts a depth image into a point cloud in world space using a Camera object.
         """
         scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        # import pdb; pdb.set_trace()
         H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
         # c2w = camera.camera_to_worlds.cpu()
         # depth_image = depth_image.cpu()
@@ -603,7 +649,6 @@ class Trainer:
             self.deprojected_queue.extend(deprojected)
             self.colors_queue.extend(colors)
         # print("Time inside process image:", time.time() - start)
-            # import pdb; pdb.set_trace()
 
 
     # def add_to_clip(clip_dict = None):
@@ -642,6 +687,7 @@ class Trainer:
         # self.pipeline.percentage_masked = ViewerButton(name="Percent Masked", cb_hook=self.handle_percentage_masked)
         # self.pipeline.plot_verbose = ViewerCheckbox(name="Plot Verbose", default_value=True)
         self.pipeline.train_lerf = ViewerButton(name="Train LERF", cb_hook=self.handle_train_lerf)
+        self.pipeline.begin_differencing = ViewerButton(name="Begin Differencing", cb_hook=self.handle_begin_differencing)
 
         self.optimizers = self.setup_optimizers()
 
@@ -749,7 +795,7 @@ class Trainer:
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
-                    if self.imgidx > 5 and self.calculate_diff:
+                    if self.calculate_diff and self.imgidx > 5: #and self.begin_differencing:
                         # TODO: Kishore and Justin
                         self.query_diff_queue.append(msg)
 
@@ -769,7 +815,6 @@ class Trainer:
                 #     else:
                 #         self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
                 #         print("clip_out_queue get took " + str((time.time()-start)) + " s")
-                    # import pdb; pdb.set_trace()
                     
                     # random_list.append(self.clip_out_queue.get())
                     # self.process_image(self.image_process_queue.pop(0), step)
@@ -845,7 +890,7 @@ class Trainer:
                 
 
                 with self.train_lock:
-                    if step > 5*self.pipeline.model.config.warmup_length:
+                    if self.begin_differencing:
                         while len(self.query_diff_queue) > self.query_diff_size:
                             self.process_query_diff(self.query_diff_queue.pop(0), step)
 
@@ -918,8 +963,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                if step_check(step, self.config.steps_per_save):
-                    self.save_checkpoint(step)
+                # if step_check(step, self.config.steps_per_save):
+                #     self.save_checkpoint(step)
 
                 writer.write_out_storage()
 
