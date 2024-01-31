@@ -775,13 +775,13 @@ class Trainer:
         # ones = torch.ones_like(sampled_depth)
         # P_camera = torch.stack([X_camera, Y_camera, -sampled_depth, ones], dim=1)
 
-        points = torch.reshape(torch.Tensor(points).to(device), (height * width, 3))
+        points = torch.cat([torch.reshape(torch.Tensor(points).to(device), (height * width, 3)), torch.ones((height * width, 1), device=device)], dim=1)
         P_camera = points * scale
         
         homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device=device)
         camera_to_world_homogenized = torch.cat((c2w, homogenizing_row), dim=0)
 
-        P_world = torch.matmul(camera_to_world_homogenized, P_camera).T
+        P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
         
         return P_world[:, :3], flat_image
     
