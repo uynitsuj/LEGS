@@ -149,11 +149,11 @@ class TricamTrainerNode(Node):
         print("Appending imagepose to queue",flush=True)
         # self.trainer_.image_add_callback_queue.append(msg)
 
-        self.trainer_.image_add_callback_queue.append(msg.image_poses[0])
+        self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points))
 
-        self.trainer_.image_add_callback_queue.append(msg.image_poses[1])
+        # self.trainer_.image_add_callback_queue.append(msg.image_poses[1])
 
-        self.trainer_.image_add_callback_queue.append(msg.image_poses[2])
+        # self.trainer_.image_add_callback_queue.append(msg.image_poses[2])
 
 
 class Trainer:
@@ -719,8 +719,74 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
+    def deproject_droidslam_point_cloud(self, image, points, camera, device = 'cuda:0'):
+        """
+        Converts a depth image into a point cloud in world space using a Camera object.
+        """
+
+        scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+        # import pdb; pdb.set_trace()
+        H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
+        # c2w = camera.camera_to_worlds.cpu()
+        # depth_image = depth_image.cpu()
+        # image = image.cpu()
+        c2w = camera.camera_to_worlds.to(device)
+        # depth_image = depth_image.to(device)
+        image = image.to(device)
+        # fx = camera.fx.item()
+        # fy = camera.fy.item()
+        # cx = camera.cx.item()
+        # cy = camera.cy.item()
+
+        height = 60
+        width = 106
+
+        image = cv2.resize(image.cpu().numpy(), (width, height))
+
+        # grid_x, grid_y = torch.meshgrid(torch.arange(width, device = device), torch.arange(height, device = device), indexing='ij')
+        # grid_x = grid_x.transpose(0,1).float()
+        # grid_y = grid_y.transpose(0,1).float()
+
+        # flat_grid_x = grid_x.reshape(-1)
+        # flat_grid_y = grid_y.reshape(-1)
+        # flat_depth = depth_image[0, 0].reshape(-1)
+        flat_image = image.reshape(-1, 3)
+
+        ### simple uniform sampling approach
+        # num_points = flat_depth.shape[0]
+        # sampled_indices = torch.randint(0, num_points, (num_samples,))
+        # non_zero_depth_indices = torch.nonzero(flat_depth != 0).squeeze()
+
+        # Ensure there are enough non-zero depth indices to sample from
+        # if non_zero_depth_indices.numel() < num_samples:
+        #     num_samples = non_zero_depth_indices.numel()
+        # Sample from non-zero depth indices
+        # sampled_indices = non_zero_depth_indices[torch.randint(0, non_zero_depth_indices.shape[0], (num_samples,))]
+
+        # sampled_depth = flat_depth[sampled_indices] * scale
+        # # sampled_depth = flat_depth[sampled_indices]
+        # sampled_grid_x = flat_grid_x[sampled_indices]
+        # sampled_grid_y = flat_grid_y[sampled_indices]
+        # sampled_image = flat_image[sampled_indices]
+
+        # X_camera = (sampled_grid_x - width/2) * sampled_depth / fx
+        # Y_camera = -(sampled_grid_y - height/2) * sampled_depth / fy
+
+        # ones = torch.ones_like(sampled_depth)
+        # P_camera = torch.stack([X_camera, Y_camera, -sampled_depth, ones], dim=1)
+
+        points = torch.reshape(torch.Tensor(points).to(device), (height * width, 3))
+        P_camera = points * scale
+        
+        homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device=device)
+        camera_to_world_homogenized = torch.cat((c2w, homogenizing_row), dim=0)
+
+        P_world = torch.matmul(camera_to_world_homogenized, P_camera).T
+        
+        return P_world[:, :3], flat_image
+    
     # @profile
-    def process_image(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
+    def process_image(self, msg:ImagePose, step, points, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
         '''
@@ -825,23 +891,29 @@ class Trainer:
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
         else:
-            project_interval = 8
-            rs_interval = 3
-            if self.done_scale_calc and msg.depth.encoding != '' and idx % rs_interval == 0:
-                depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
-                depth = depth.unsqueeze(0).unsqueeze(0)
-                if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
-                    import torch.nn.functional as F
-                    depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
-                deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
-                self.deprojected_queue.extend(deprojected)
+            if points:
+                deprojected, colors = self.deproject_droidslam_point_cloud(image_data, points, dataset_cam)
+                self.deprojected_queue.extend(points)
                 self.colors_queue.extend(colors)
-            elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
-                depth = self.pipeline.monodepth_inference(image_data.numpy())
-                # depth = torch.rand((1,1,480,640))
-                deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
-                self.deprojected_queue.extend(deprojected)
-                self.colors_queue.extend(colors)
+            else:
+
+                project_interval = 3
+                rs_interval = 3
+                if self.done_scale_calc and msg.depth.encoding != '' and idx % rs_interval == 0:
+                    depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
+                    depth = depth.unsqueeze(0).unsqueeze(0)
+                    if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
+                        import torch.nn.functional as F
+                        depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
+                    deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+                    self.deprojected_queue.extend(deprojected)
+                    self.colors_queue.extend(colors)
+                elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
+                    depth = self.pipeline.monodepth_inference(image_data.numpy())
+                    # depth = torch.rand((1,1,480,640))
+                    deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam) #, num_samples = 40)
+                    self.deprojected_queue.extend(deprojected)
+                    self.colors_queue.extend(colors)
 
 
     # def add_to_clip(clip_dict = None):
@@ -993,7 +1065,8 @@ class Trainer:
                 has_image_add = len(self.image_add_callback_queue) > 0
                 if has_image_add:
                     #Not sure if we want to loop till the queue is empty or not
-                    msg = self.image_add_callback_queue.pop(0)
+                    msg, points = self.image_add_callback_queue.pop(0)
+                    # import pdb; pdb.set_trace()
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
@@ -1004,14 +1077,15 @@ class Trainer:
 
                     else:
                         self.add_img_callback(msg)
-                        self.image_process_queue.append(msg)
+                        self.image_process_queue.append((msg, points))
                         self.imgidx += 1
 
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
                         
                 while len(self.image_process_queue) > 0:
-                    self.process_image(self.image_process_queue.pop(0), step)
+                    message, pts = self.image_process_queue.pop(0)
+                    self.process_image(message, step, pts)
                 
                 if self.train_lerf and not self.clip_out_queue.empty():
                     print("adding clip pyramid embeddings")
@@ -1021,7 +1095,7 @@ class Trainer:
                     time.sleep(0.01)
                     continue
                 
-                if not self.done_scale_calc and (len(parser_scale_list)<10):
+                if not self.done_scale_calc and (len(parser_scale_list)<5):
                     time.sleep(0.01)
                     continue
 
@@ -1149,8 +1223,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                if step_check(step, self.config.steps_per_save):
-                    self.save_checkpoint(step)
+                # if step_check(step, self.config.steps_per_save):
+                #     self.save_checkpoint(step)
 
                 writer.write_out_storage()
 
