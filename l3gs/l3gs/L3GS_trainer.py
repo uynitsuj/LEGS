@@ -214,6 +214,9 @@ class Trainer:
         self.begin_differencing = False
         self.diff_wait_counter = 0
 
+        self.rgb_diff_pointcloud_queue = deque()
+        self.clip_diff_pointcloud_queue = deque()
+
     def handle_stage_btn(self, handle: ViewerButton):
         import os.path as osp
         bag_path = osp.join(
@@ -464,6 +467,7 @@ class Trainer:
         # )
 
         rgb_boxes, rgb_points_tr = self.pipeline.heatmaps2box(rgb_heatmaps, rgb_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
+        self.rgb_diff_pointcloud_queue.append(rgb_points_tr)
         if len(rgb_boxes) > 0:
             # Change detected!
             self.viewer_state.viser_server.add_point_cloud(
@@ -493,7 +497,17 @@ class Trainer:
         print(">>> using clip (heatmap):", self.pipeline.use_clip)
         if self.pipeline.use_clip:
             clip_boxes, clip_points_tr = self.pipeline.heatmaps2box(clip_heatmaps, clip_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
-            
+            self.clip_diff_pointcloud_queue.append(clip_points_tr)
+
+            if len(self.clip_diff_pointcloud_queue) > 5:
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(self.clip_diff_pointcloud_queue.popleft().vertices)
+                while self.clip_diff_pointcloud_queue:
+                    pcd.points.extend(o3d.utility.Vector3dVector(self.clip_diff_pointcloud_queue.popleft().vertices))
+                
+                # TODO: cluster/filter the pcd and fit a bounding box to it
+                    # look at localize_query_cb()
+
             if len(clip_boxes) > 0:
                 # Change detected!
                 self.viewer_state.viser_server.add_point_cloud(
