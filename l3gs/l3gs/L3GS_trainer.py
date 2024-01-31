@@ -17,6 +17,7 @@ from rich import box, style
 from rich.panel import Panel
 from rich.table import Table
 from cv_bridge import CvBridge  # Needed for converting between ROS Image messages and OpenCV images
+from torch.nn import Parameter
 
 
 from nerfstudio.cameras.camera_utils import get_distortion_params
@@ -34,10 +35,10 @@ from nerfstudio.utils.decorators import check_eval_enabled, check_main_thread, c
 from nerfstudio.utils.misc import step_check
 from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.utils.writer import EventName, TimeWriter
-from nerfstudio.viewer.server.viewer_state import ViewerState
-from nerfstudio.viewer_beta.viewer import Viewer as ViewerBetaState
-from nerfstudio.viewer_beta.viewer import VISER_NERFSTUDIO_SCALE_RATIO
-from nerfstudio.viewer_beta.viewer_elements import ViewerButton, ViewerCheckbox
+from nerfstudio.viewer.viewer import Viewer as ViewerState
+from nerfstudio.viewer.viewer import VISER_NERFSTUDIO_SCALE_RATIO
+from nerfstudio.viewer.viewer_elements import ViewerButton, ViewerCheckbox
+from nerfstudio.viewer_legacy.server.viewer_state import ViewerLegacyState
 
 import nerfstudio.utils.poses as pose_utils
 import numpy as np
@@ -45,10 +46,11 @@ import scipy.spatial.transform as transform
 import rclpy
 from rclpy.node import Node
 from lifelong_msgs.msg import ImagePose
+from lifelong_msgs.msg import ImagePoses
 from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
-
+from l3gs.L3GS_utils import Utils as U
 
 TORCH_DEVICE = str
 TRAIN_ITERATION_OUTPUT = Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]
@@ -197,6 +199,7 @@ class Trainer:
         self.query_diff_queue = []
         self.query_diff_size = 5*3
         self.query_diff_msg_queue = []
+        self.query_diff_size = 1
         self.cvbridge = CvBridge()
         self.clip_out_queue = mp.Queue()
         self.dino_out_queue = mp.Queue()
@@ -208,7 +211,7 @@ class Trainer:
         self.deprojected_queue = deque()
         self.colors_queue = deque()
         self.train_lerf = False
-
+        self.diff_wait_counter = 0
 
     def handle_stage_btn(self, handle: ViewerButton):
         import os.path as osp
@@ -340,6 +343,9 @@ class Trainer:
         print("Training LERF")
         self.train_lerf = True
 
+    def handle_diff(self, handle: ViewerButton):
+        print("Diff")
+        self.calculate_diff = True
 
     def add_img_callback(self, msg:ImagePose, decode_only=False):
         '''
@@ -352,7 +358,7 @@ class Trainer:
         # print('self.imgidx: ' + str(self.imgidx))
         # # CONSOLE.print("Adding image to dataset")
         # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'bgr8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
         # # By default the D4 VPU provides 16bit depth with a depth unit of 1000um (1mm).
         # # --> depth_data is in meters.
         # depth_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
@@ -382,6 +388,95 @@ class Trainer:
         # return img_out, dep_out, retc
 
     # @profile
+            
+    def process_query_diff(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
+        self.diff_wait_counter -= 1
+        if self.diff_wait_counter > 0:
+            return
+
+        heatmaps, heatmap_masks, gsplat_outputs_list, poses, depths, images = [], [], [], [], [], []
+
+        c2w = ros_pose_to_nerfstudio(msg.pose)
+        H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
+        row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=c2w.device)
+        c2w= torch.matmul(torch.cat([H,row]),torch.cat([c2w,row]))[:3,:]
+        c2w[:3,3] *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+
+        image = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
+        image, depth = image.to(self.device), depth.to(self.device)
+        fx = torch.tensor([msg.fl_x])
+        fy = torch.tensor([msg.fl_y])
+        cy = torch.tensor([msg.cy])
+        cx = torch.tensor([msg.cx])
+        # cx = torch.tensor([msg.cy])
+        # cy = torch.tensor([msg.cx])
+        width = torch.tensor([msg.w])
+        height = torch.tensor([msg.h])
+        distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
+        camera_type = CameraType.PERSPECTIVE
+        pose = Cameras(c2w, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+        pose.camera_type = pose.camera_type.unsqueeze(0)
+
+        heat_map, cleaned_heatmap_mask, gsplat_outputs = self.pipeline.query_diff(image, pose, depth, step, vis_verbose = self.pipeline.plot_verbose)
+        # import pdb; pdb.set_trace()
+        # if self.pipeline.use_clip:
+        #     heat_map_mask = heat_map > -0.85
+        # else:
+        #     heat_map_mask = heat_map
+
+        heatmaps.append(heat_map)
+        heatmap_masks.append(cleaned_heatmap_mask)
+        gsplat_outputs_list.append(gsplat_outputs)
+        images.append(image)
+        poses.append(pose)
+        depths.append(depth)
+        images.append(image)
+
+        # affected_gaussians_idxs = self.pipeline.heatmaps2gaussians(heatmap_masks, gsplat_outputs_list, poses, depths, images)
+
+        boxes, points_tr = self.pipeline.heatmaps2box(heatmaps, heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
+
+        gaussian_means_ptcld = self.pipeline.model.means.detach().cpu().numpy()
+        colors = np.ones_like(gaussian_means_ptcld)
+        self.viewer_state.viser_server.add_point_cloud(
+            '/means_ptcld',
+            points=gaussian_means_ptcld * 10,
+            colors=colors,
+            point_size=0.3,
+        )
+
+        if len(boxes) > 0:
+            # Change detected!
+            self.viewer_state.viser_server.add_point_cloud(
+                '/pointcloud',
+                points=points_tr.vertices * 10,
+                colors=points_tr.visual.vertex_colors[:, :3],
+            )
+
+            for obox_ind, obox in enumerate(boxes):
+                import trimesh
+                bbox = trimesh.creation.box(
+                    extents=obox.S.cpu().numpy() * 10
+                )
+                bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
+                    f"/bbox_{obox_ind}",
+                    bbox,
+                    # scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale,
+                    wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
+                    position=obox.T.cpu().numpy() * 10,
+                )
+                print("just visualized the box.")
+
+                affected_gaussians_idxs = self.pipeline.bbox2gaussians(obox)
+                inside = obox.within(self.pipeline.model.means)
+                # print(affected_gaussians_idxs.shape, self.pipeline.model.means.shape)
+                # self.pipeline.model.means = Parameter(self.pipeline.model.means[~affected_gaussians_idxs].detach())
+            self.diff_wait_counter = 5
+
+            print(poses, affected_gaussians_idxs)
+        # TODO: mask out regions in all training images
+    
     def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 250, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
@@ -449,7 +544,7 @@ class Trainer:
         # start = time.time()
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'bgr8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
@@ -476,10 +571,11 @@ class Trainer:
         R = vtf.SO3.from_matrix(c2w[:3, :3])
         R = R @ vtf.SO3.from_x_radians(np.pi)
         cidx = self.viewer_state._pick_drawn_image_idxs(idx+1)[-1]
+        # scale_factor = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale=0.75,
+                    scale=0.5,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
@@ -495,6 +591,7 @@ class Trainer:
         self.viewer_state.original_c2w[cidx] = c2w
         project_interval = 4
         # print('process idx: ' + str(idx))
+        # import pdb; pdb.set_trace()
 
         if self.done_scale_calc and msg.depth is not None and idx % project_interval == 0:
             depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
@@ -552,6 +649,7 @@ class Trainer:
         # self.pipeline.percentage_masked = ViewerButton(name="Percent Masked", cb_hook=self.handle_percentage_masked)
         # self.pipeline.plot_verbose = ViewerCheckbox(name="Plot Verbose", default_value=True)
         self.pipeline.train_lerf = ViewerButton(name="Train LERF", cb_hook=self.handle_train_lerf)
+        self.pipeline.start_diff = ViewerButton(name="Start Differencing", cb_hook=self.handle_diff)
 
         self.optimizers = self.setup_optimizers()
 
@@ -569,29 +667,33 @@ class Trainer:
                 pipeline=self.pipeline,
             )
         )
+        if self.config.is_viewer_legacy_enabled() and self.local_rank == 0:
+            datapath = self.config.data
+            if datapath is None:
+                datapath = self.base_dir
+            self.viewer_state = ViewerLegacyState(
+                self.config.viewer,
+                log_filename=viewer_log_path,
+                datapath=datapath,
+                pipeline=self.pipeline,
+                trainer=self,
+                train_lock=self.train_lock,
+            )
+            banner_messages = [f"Legacy viewer at: {self.viewer_state.viewer_url}"]
         if self.config.is_viewer_enabled() and self.local_rank == 0:
             datapath = self.config.data
             if datapath is None:
                 datapath = self.base_dir
             self.viewer_state = ViewerState(
                 self.config.viewer,
-                log_filename=self.viewer_log_path,
+                log_filename=viewer_log_path,
                 datapath=datapath,
                 pipeline=self.pipeline,
                 trainer=self,
                 train_lock=self.train_lock,
+                share=self.config.viewer.make_share_url,
             )
-            banner_messages = [f"Viewer at: {self.viewer_state.viewer_url}"]
-        if self.config.is_viewer_beta_enabled() and self.local_rank == 0:
-            self.viewer_state = ViewerBetaState(
-                self.config.viewer,
-                log_filename=self.viewer_log_path,
-                datapath=self.base_dir,
-                pipeline=self.pipeline,
-                trainer=self,
-                train_lock=self.train_lock,
-            )
-            banner_messages = [f"Viewer Beta at: {self.viewer_state.viewer_url}"]
+            banner_messages = self.viewer_state.viewer_info
         self._check_viewer_warnings()
         self._init_viewer_state()
 
@@ -661,7 +763,9 @@ class Trainer:
                     # we don't want to add the image to the dataset unless we are sure.
                     if self.calculate_diff:
                         # TODO: Kishore and Justin
-                        raise NotImplementedError
+                        # raise NotImplementedError
+                        self.query_diff_queue.append(msg)
+
                     else:
                         self.add_img_callback(msg)
                         self.image_process_queue.append(msg)
@@ -669,7 +773,7 @@ class Trainer:
 
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
-
+                        
                 # random_list = []
                 # while len(self.image_process_queue) > 0:
                 # # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
@@ -680,26 +784,25 @@ class Trainer:
                 #         self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
                 #         print("clip_out_queue get took " + str((time.time()-start)) + " s")
                     # import pdb; pdb.set_trace()
-                    
+                
                     # random_list.append(self.clip_out_queue.get())
                     # self.process_image(self.image_process_queue.pop(0), step)
-                        
-
+                
                 while len(self.image_process_queue) > 0:
                     self.process_image(self.image_process_queue.pop(0), step)
-                        
+                
                 # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
                 #     self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())
                 if self.train_lerf and not self.clip_out_queue.empty():
                     print("adding clip pyramid embeddings")
                     self.pipeline.add_to_clip(self.clip_out_queue.get(), step)
 
-
                 if self.training_state == "paused":
                     time.sleep(0.01)
                     continue
                 # Even if we are supposed to "train", if we don't have enough images we don't train.
-                elif not self.done_scale_calc and (len(parser_scale_list)<20):
+                # print(len(parser_scale_list))
+                if not self.done_scale_calc and (len(parser_scale_list)<5):
                     time.sleep(0.01)
                     continue
 
@@ -709,7 +812,7 @@ class Trainer:
 
                 # Create scene scale based on the images collected so far. This is done once.
                 if not self.done_scale_calc:
-                    print("Scale calc")
+                    # print("Scale calc")
                     self.done_scale_calc = True
                     from nerfstudio.cameras.camera_utils import auto_orient_and_center_poses
                     poses = [np.concatenate([ros_pose_to_nerfstudio(p),np.array([[0,0,0,1]])],axis=0) for p in parser_scale_list]
@@ -756,6 +859,9 @@ class Trainer:
 
                 with self.train_lock:
                     #TODO add the image diff stuff here
+                    if step > 5*self.pipeline.model.config.warmup_length:
+                        while len(self.query_diff_queue) > self.query_diff_size:
+                            self.process_query_diff(self.query_diff_queue.pop(0), step)
                     #######################################
                     # Normal training loop
                     #######################################
@@ -824,8 +930,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                # if step_check(step, self.config.steps_per_save):
-                #     self.save_checkpoint(step)
+                if step_check(step, self.config.steps_per_save):
+                    self.save_checkpoint(step)
 
                 writer.write_out_storage()
 
