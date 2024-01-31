@@ -152,7 +152,7 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """stop culling/splitting at this step WRT screen size of gaussians"""
     random_init: bool = False
     """whether to initialize the positions uniformly randomly (not SFM points)"""
-    num_random: int = 20
+    num_random: int = 50
     """Number of gaussians to initialize if random init is used"""
     random_scale: float = 10.0
     "Size of the cube to initialize random gaussians within"
@@ -199,7 +199,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         distances, _ = self.k_nearest_sklearn(self.means.data, 3)
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)/3
+        avg_dist = distances.mean(dim=-1, keepdim=True)
         self.scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
         self.quats = torch.nn.Parameter(random_quat_tensor(self.num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
@@ -1214,12 +1214,14 @@ class LLGaussianSplattingModel(SplatfactoModel):
             # clip_feats = self.gaussian_lerf_field.get_outputs(self.means, self.best_scales[0].to(self.device) * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
 
             # Do K nearest neighbors for each point and then avg the clip hash for each point based on the KNN
-            distances, indicies = self.k_nearest_sklearn(self.means.data, 3, True)
+            # import pdb; pdb.set_trace()
+            means_freeze = self.means.data.clone().cpu()
+            distances, indicies = self.k_nearest_sklearn(means_freeze, 3, True)
             distances = torch.from_numpy(distances).to(self.device)
             indicies = torch.from_numpy(indicies).to(self.device).view(-1)
             weights = torch.sigmoid(self.opacities[indicies].view(-1, 4))
             weights = torch.nn.Softmax(dim=-1)(weights)
-            points = self.means[indicies]
+            points = means_freeze[indicies]
             # clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
             clip_hash_encoding = self.gaussian_lerf_field.get_hash(points)
             clip_hash_encoding = clip_hash_encoding.view(-1, 4, clip_hash_encoding.shape[1])
@@ -1235,16 +1237,17 @@ class LLGaussianSplattingModel(SplatfactoModel):
             # self.crop_ids = (relevancy[..., 0] > self.relevancy_thresh.value)
             
             #Define all crop viewer elements
-            self.crop_points = relevancy[..., 0] > self.relevancy_thresh.value
-            self._crop_center_init = self.means[self.crop_points].mean(dim=0).cpu().numpy()
-            self.original_means = self.means.data.clone()
+            # self.crop_points = relevancy[..., 0] > self.relevancy_thresh.value
+            # self._crop_center_init = self.means[self.crop_points].mean(dim=0).cpu().numpy()
+            self._crop_center_init = means_freeze[relevancy[..., 0].argmax(dim=0).cpu().numpy()].cpu().numpy()
+            # self.original_means = self.means.data.clone()
             
             query = self._crop_center_init / self.viser_scale_ratio
 
             self.viewer_control.viser_server.add_frame(
             "/query",
             axes_length = 15, 
-            axes_radius = 0.025 * 30,
+            axes_radius = 0.025 * 18,
             wxyz=(1.0, 0.0, 0.0, 0.0),
             position=(query[0], query[1], query[2]),
             )

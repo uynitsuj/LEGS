@@ -133,12 +133,22 @@ class TrainerNode(Node):
     def __init__(self,trainer):
         super().__init__('trainer_node')
         self.trainer_ = trainer
-        self.subscription_ = self.create_subscription(ImagePoses,"/camera/color/imagepose",self.add_img_callback,100)
-
-        # self.subscription_ = self.create_subscription(ImagePose,"/sim_realsense",self.add_img_callback,100)
+        self.subscription_ = self.create_subscription(ImagePose,"/camera/color/imagepose",self.add_img_callback,100)
 
     def add_img_callback(self,msg):
         print("Appending imagepose to queue",flush=True)
+        self.trainer_.image_add_callback_queue.append(msg)
+
+class TricamTrainerNode(Node):
+    def __init__(self,trainer):
+        super().__init__('trainer_node')
+        self.trainer_ = trainer
+        self.subscription_ = self.create_subscription(ImagePoses,"/camera/color/imagepose",self.add_img_callback,100)
+
+    def add_img_callback(self,msg):
+        print("Appending imagepose to queue",flush=True)
+        # self.trainer_.image_add_callback_queue.append(msg)
+
         self.trainer_.image_add_callback_queue.append(msg.image_poses[0])
 
         self.trainer_.image_add_callback_queue.append(msg.image_poses[1])
@@ -360,41 +370,41 @@ class Trainer:
         if decode_only, don't add the image to the clip/dino queue using `add_image`.
         '''
         # image: Image = msg.img
-        camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+        # camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # print('self.imgidx: ' + str(self.imgidx))
         # # CONSOLE.print("Adding image to dataset")
         # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         
-        fx = torch.tensor([msg.fl_x])
-        fy = torch.tensor([msg.fl_y])
-        cy = torch.tensor([msg.cy])
-        cx = torch.tensor([msg.cx])
+        # fx = torch.tensor([msg.fl_x])
+        # fy = torch.tensor([msg.fl_y])
+        # cy = torch.tensor([msg.cy])
+        # cx = torch.tensor([msg.cx])
         # cx = torch.tensor([msg.cy])
         # cy = torch.tensor([msg.cx])
 
         ### Multicamera Support
-        width = torch.tensor([msg.w])
-        height = torch.tensor([msg.h])
-        distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        camera_type = CameraType.PERSPECTIVE
-        camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type).reshape(())
-        K = camera.get_intrinsics_matrices().numpy()
+        # width = torch.tensor([msg.w])
+        # height = torch.tensor([msg.h])
+        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
+        # camera_type = CameraType.PERSPECTIVE
+        # camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type).reshape(())
+        # K = camera.get_intrinsics_matrices().numpy()
 
-        if self.multicam:
-            crop_top = 60
-            crop_bottom = 480 - 60
-            if msg.w != msg.img.width or msg.h != msg.img.height:
-                # crop image_data to new_W new_H centered
-                image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
-                # print('after croppping', image_data.shape)
-                import torch.nn.functional as F
-                image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
-                # back to HxWxC
-                image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
-                # print('after resize', image_data.shape)
-        K, image_data, mask = self._undistort_image(camera, get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3).numpy(), {}, image_data.cpu().numpy(), K)
-        image_data = torch.from_numpy(image_data).to(torch.float32)
+        # if self.multicam:
+        #     crop_top = 60
+        #     crop_bottom = 480 - 60
+        #     if msg.w != msg.img.width or msg.h != msg.img.height:
+        #         # crop image_data to new_W new_H centered
+        #         image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
+        #         # print('after croppping', image_data.shape)
+        #         import torch.nn.functional as F
+        #         image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
+        #         # back to HxWxC
+        #         image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
+        #         # print('after resize', image_data.shape)
+        # K, image_data, mask = self._undistort_image(camera, get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3).numpy(), {}, image_data.cpu().numpy(), K)
+        # image_data = torch.from_numpy(image_data).to(torch.float32)
 
         if not decode_only:
             # with self.train_lock:
@@ -717,7 +727,7 @@ class Trainer:
         # start = time.time()
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
-        image_data = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
+        image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
@@ -736,31 +746,31 @@ class Trainer:
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
         camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type).reshape(())
-        K = camera.get_intrinsics_matrices().numpy()
+        # K = camera.get_intrinsics_matrices().numpy()
 
-        if self.multicam:
-            crop_top = 60
-            crop_bottom = 480 - 60
-            if msg.w != msg.img.width or msg.h != msg.img.height:
-                # crop image_data to new_W new_H centered
-                image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
-                # print('after croppping', image_data.shape)
-                import torch.nn.functional as F
-                image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
-                # back to HxWxC
-                image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
-                # print('after resize', image_data.shape)
-        K, image_data, mask = self._undistort_image(camera, get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3).numpy(), {}, image_data.cpu().numpy(), K)
-        image_data = torch.from_numpy(image_data).to(torch.float32)
-        fx = float(K[0, 0])
-        fy = float(K[1, 1])
-        cx = float(K[0, 2])
-        cy = float(K[1, 2])
-        width = image_data.shape[1]
-        height = image_data.shape[0]
-        distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        camera_type = CameraType.PERSPECTIVE
-        camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+        # if self.multicam:
+        #     crop_top = 60
+        #     crop_bottom = 480 - 60
+        #     if msg.w != msg.img.width or msg.h != msg.img.height:
+        #         # crop image_data to new_W new_H centered
+        #         image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
+        #         # print('after croppping', image_data.shape)
+        #         import torch.nn.functional as F
+        #         image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
+        #         # back to HxWxC
+        #         image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
+        #         # print('after resize', image_data.shape)
+        # K, image_data, mask = self._undistort_image(camera, get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3).numpy(), {}, image_data.cpu().numpy(), K)
+        # image_data = torch.from_numpy(image_data).to(torch.float32)
+        # fx = float(K[0, 0])
+        # fy = float(K[1, 1])
+        # cx = float(K[0, 2])
+        # cy = float(K[1, 2])
+        # width = image_data.shape[1]
+        # height = image_data.shape[0]
+        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
+        # camera_type = CameraType.PERSPECTIVE
+        # camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
 
         with self.train_lock:
             self.pipeline.process_image(img = image_data, pose = camera, clip=clip_dict, dino=dino_data)
@@ -815,8 +825,8 @@ class Trainer:
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
         else:
-            project_interval = 6
-            if self.done_scale_calc and msg.depth.encoding != '' and idx % project_interval == 0:
+            project_interval = 4
+            if self.done_scale_calc and msg.depth.encoding != '':
                 depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
                 depth = depth.unsqueeze(0).unsqueeze(0)
                 if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
@@ -825,6 +835,12 @@ class Trainer:
                 deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
+            # elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
+            #     depth = self.pipeline.monodepth_inference(image_data.numpy())
+            #     # depth = torch.rand((1,1,480,640))
+            #     deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+            #     self.deprojected_queue.extend(deprojected)
+            #     self.colors_queue.extend(colors)
 
 
     # def add_to_clip(clip_dict = None):
@@ -957,7 +973,12 @@ class Trainer:
             )
 
         rclpy.init(args=None)
-        trainer_node = TrainerNode(self)
+        if self.multicam:
+            trainer_node = TricamTrainerNode(self)
+            print("multicam trainer node up")
+        else:
+            trainer_node = TrainerNode(self)
+
         parser_scale_list = []
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
@@ -988,25 +1009,9 @@ class Trainer:
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
                         
-                # random_list = []
-                # while len(self.image_process_queue) > 0:
-                # # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty():
-                #     start = time.time()
-                #     if self.clip_out_queue.empty():
-                #         self.process_image(self.image_process_queue.pop(0), step)
-                #     else:
-                #         self.process_image(self.image_process_queue.pop(0), step, clip_dict=self.clip_out_queue.get())
-                #         print("clip_out_queue get took " + str((time.time()-start)) + " s")
-                    # import pdb; pdb.set_trace()
-                
-                    # random_list.append(self.clip_out_queue.get())
-                    # self.process_image(self.image_process_queue.pop(0), step)
-                
                 while len(self.image_process_queue) > 0:
                     self.process_image(self.image_process_queue.pop(0), step)
                 
-                # while len(self.image_process_queue) > 0 and not self.clip_out_queue.empty() and self.done_scale_calc:
-                #     self.process_image(self.image_process_queue.pop(0), step, self.clip_out_queue.get())
                 if self.train_lerf and not self.clip_out_queue.empty():
                     print("adding clip pyramid embeddings")
                     self.pipeline.add_to_clip(self.clip_out_queue.get(), step)
@@ -1014,8 +1019,7 @@ class Trainer:
                 if self.training_state == "paused":
                     time.sleep(0.01)
                     continue
-                # Even if we are supposed to "train", if we don't have enough images we don't train.
-                # print(len(parser_scale_list))
+                
                 if not self.done_scale_calc and (len(parser_scale_list)<10):
                     time.sleep(0.01)
                     continue
