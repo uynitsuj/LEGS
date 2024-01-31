@@ -783,7 +783,7 @@ class Trainer:
 
         P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
         
-        return P_world[:, :3], flat_image
+        return P_world[:, :3], torch.from_numpy(flat_image).to(device)
     
     # @profile
     def process_image(self, msg:ImagePose, step, points, clip_dict = None, dino_data = None):
@@ -893,7 +893,7 @@ class Trainer:
         else:
             if points:
                 deprojected, colors = self.deproject_droidslam_point_cloud(image_data, points, dataset_cam)
-                self.deprojected_queue.extend(points)
+                self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
             else:
 
