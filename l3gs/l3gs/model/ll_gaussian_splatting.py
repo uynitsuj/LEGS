@@ -493,7 +493,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
     def refinement_after(self, optimizers: Optimizers, step):
         assert step == self.step
-        if self.step <= self.config.warmup_length:
+        if self.step <= self.config.warmup_length or self.steps_since_add <= 1000:
             return
         with torch.no_grad():
             # Offset all the opacity reset logic by refine_every so that we don't
