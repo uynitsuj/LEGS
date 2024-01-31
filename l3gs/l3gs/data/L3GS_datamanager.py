@@ -444,7 +444,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         #Pick a random scale from min to max and then the clip features at that scale
         if self.use_clip:
-            if step - self.lerf_step > 500:
+            if step - self.lerf_step > 100:
                 # print("Training CLIP")
                 H, W = data["image"].shape[:2]
                 scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]

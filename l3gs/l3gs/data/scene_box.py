@@ -47,7 +47,6 @@ class SceneBox:
     def get_centered_and_scaled_scene_box(self, scale_factor: Union[float, torch.Tensor] = 1.0):
         """Returns a new box that has been shifted and rescaled to be centered
         about the origin.
-
         Args:
             scale_factor: How much to scale the camera origins by.
         """
@@ -56,7 +55,6 @@ class SceneBox:
     @staticmethod
     def get_normalized_positions(positions: Float[Tensor, "*batch 3"], aabb: Float[Tensor, "2 3"]):
         """Return normalized positions in range [0, 1] based on the aabb axis-aligned bounding box.
-
         Args:
             positions: the xyz positions
             aabb: the axis-aligned bounding box
@@ -68,7 +66,6 @@ class SceneBox:
     @staticmethod
     def from_camera_poses(poses: Float[Tensor, "*batch 3 4"], scale_factor: float) -> "SceneBox":
         """Returns the instance of SceneBox that fully envelopes a set of poses
-
         Args:
             poses: tensor of camera pose matrices
             scale_factor: How much to scale the camera origins by.
@@ -109,7 +106,7 @@ class OrientedBox:
         T = torch.tensor(pos)
         S = torch.tensor(scale)
         return OrientedBox(R=R,T=T,S=S)
-    
+
     @staticmethod 
     def from_points(pts: Float[Tensor,"n 3"], device="cpu"):
         """Construct a box from a set of points."""
