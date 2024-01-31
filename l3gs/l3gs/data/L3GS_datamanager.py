@@ -171,7 +171,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         self.clip_interpolator = PyramidEmbeddingDataloader(
             image_list=[],
-            device='cuda:0',
+            device='cuda:1',
             cfg={
                 "tile_size_range": list(self.config.patch_tile_size_range),
                 "tile_size_res": self.config.patch_tile_size_res,
