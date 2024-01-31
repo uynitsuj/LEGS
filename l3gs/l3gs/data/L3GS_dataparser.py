@@ -32,7 +32,6 @@ class L3GSDataParserConfig(DataParserConfig):
     img_height: int = 480
     img_width: int = 848
 
-
 @dataclass
 class L3GSDataParser(DataParser):
     """ROS DataParser"""
