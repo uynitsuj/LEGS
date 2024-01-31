@@ -783,6 +783,7 @@ class Trainer:
 
         P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
         
+        import pdb; pdb.set_trace()
         return P_world[:, :3], torch.from_numpy(flat_image).to(device)
     
     # @profile
