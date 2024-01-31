@@ -825,8 +825,9 @@ class Trainer:
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
         else:
-            project_interval = 4
-            if self.done_scale_calc and msg.depth.encoding != '':
+            project_interval = 8
+            rs_interval = 3
+            if self.done_scale_calc and msg.depth.encoding != '' and idx % rs_interval == 0:
                 depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
                 depth = depth.unsqueeze(0).unsqueeze(0)
                 if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
@@ -835,12 +836,12 @@ class Trainer:
                 deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
-            # elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
-            #     depth = self.pipeline.monodepth_inference(image_data.numpy())
-            #     # depth = torch.rand((1,1,480,640))
-            #     deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
-            #     self.deprojected_queue.extend(deprojected)
-            #     self.colors_queue.extend(colors)
+            elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
+                depth = self.pipeline.monodepth_inference(image_data.numpy())
+                # depth = torch.rand((1,1,480,640))
+                deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+                self.deprojected_queue.extend(deprojected)
+                self.colors_queue.extend(colors)
 
 
     # def add_to_clip(clip_dict = None):
@@ -983,7 +984,7 @@ class Trainer:
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
             step = 0
-            num_add = 8
+            num_add = 32
             self.imgidx = 0
             
             while True:
