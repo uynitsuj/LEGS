@@ -36,7 +36,7 @@ from nerfstudio.models.base_model import ModelConfig
 from l3gs.data.utils.patch_embedding_dataloader import PatchEmbeddingDataloader
 # from nerfstudio.models.gaussian_splatting import GaussianSplattingModelConfig
 from l3gs.model.ll_gaussian_splatting import LLGaussianSplattingModelConfig
-from l3gs.monodepth.zoedepth_network import ZoeDepthNetworkConfig
+# from l3gs.monodepth.zoedepth_network import ZoeDepthNetworkConfig
 from torch.cuda.amp.grad_scaler import GradScaler
 from torchvision.transforms.functional import resize
 from nerfstudio.configs.base_config import InstantiateConfig
@@ -136,7 +136,7 @@ class L3GSPipelineConfig(VanillaPipelineConfig):
     """specifies the datamanager config"""
     model: ModelConfig = LLGaussianSplattingModelConfig()
     """specifies the model config"""
-    depthmodel:InstantiateConfig = ZoeDepthNetworkConfig()
+    # depthmodel:InstantiateConfig = ZoeDepthNetworkConfig()
     network: BaseImageEncoderConfig = BaseImageEncoderConfig()
     """specifies the vision-language network config"""
 
@@ -189,7 +189,7 @@ class L3GSPipeline(VanillaPipeline):
         )
         self.model.to(device)
 
-        self.depthmodel = config.depthmodel.setup()
+        # self.depthmodel = config.depthmodel.setup()
 
         self.world_size = world_size
         if world_size > 1:

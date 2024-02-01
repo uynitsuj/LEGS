@@ -11,8 +11,8 @@ from nerfstudio.plugins.types import MethodSpecification
 from l3gs.encoders.openclip_encoder import OpenCLIPNetworkConfig
 # from nerfstudio.models.gaussian_splatting import GaussianSplattingModelConfig
 from l3gs.model.ll_gaussian_splatting import LLGaussianSplattingModelConfig
-from l3gs.monodepth.zoedepth_network import ZoeDepthNetworkConfig
-from l3gs.monodepth.midas_network import MidasDepthNetworkConfig
+# from l3gs.monodepth.zoedepth_network import ZoeDepthNetworkConfig
+# from l3gs.monodepth.midas_network import MidasDepthNetworkConfig
 
 from l3gs.L3GS_trainer import TrainerConfig
 from l3gs.L3GS_pipeline import L3GSPipelineConfig
@@ -43,9 +43,9 @@ l3gs_method = MethodSpecification(
             ),
             model=LLGaussianSplattingModelConfig(),
             network=OpenCLIPNetworkConfig(
-                    clip_model_type="ViT-B-16", clip_model_pretrained="laion2b_s34b_b88k", clip_n_dims=512, device='cuda:1'
+                    clip_model_type="ViT-B-16", clip_model_pretrained="laion2b_s34b_b88k", clip_n_dims=512, device='cuda:0'
             ),
-            depthmodel=ZoeDepthNetworkConfig(device='cuda:0'),
+            # depthmodel=ZoeDepthNetworkConfig(device='cuda:0'),
         ),
         optimizers={
             "xyz": {

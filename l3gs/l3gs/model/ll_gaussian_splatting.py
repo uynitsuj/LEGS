@@ -152,9 +152,9 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """stop culling/splitting at this step WRT screen size of gaussians"""
     random_init: bool = False
     """whether to initialize the positions uniformly randomly (not SFM points)"""
-    num_random: int = 50
+    num_random: int = 10
     """Number of gaussians to initialize if random init is used"""
-    random_scale: float = 10.0
+    random_scale: float = 20.0
     "Size of the cube to initialize random gaussians within"
     ssim_lambda: float = 0.2
     """weight of ssim loss"""
@@ -199,7 +199,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         distances, _ = self.k_nearest_sklearn(self.means.data, 3)
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)
+        avg_dist = distances.mean(dim=-1, keepdim=True)/3
         self.scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
         self.quats = torch.nn.Parameter(random_quat_tensor(self.num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
@@ -255,6 +255,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.crop_ids = None#torch.ones_like(self.means[:,0],dtype=torch.bool)
         self.dropout_mask = None
         self.original_means = None
+        self.clrs = None
 
         # self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
         #     num_cameras=self.num_train_data, device="cpu"
@@ -353,11 +354,19 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 colors = torch.stack(colors, dim=0).to(self.device)
                 numpts = len(deprojected)
                 avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/3
+
+                if self.clrs == None:
+                    self.clrs = torch.nn.Parameter(torch.cat([self.means.detach(), colors], dim=0))
+                else:
+                    self.clrs = torch.nn.Parameter(torch.cat([self.clrs.detach(), colors], dim=0))
+
+
                 self.means = torch.nn.Parameter(torch.cat([self.means.detach(), deprojected], dim=0))
 
                 self.scales = torch.nn.Parameter(torch.cat([self.scales.detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
                 self.quats = torch.nn.Parameter(torch.cat([self.quats.detach(), random_quat_tensor(numpts).float().cuda()]))
 
+                
                 dim_sh = num_sh_bases(self.config.sh_degree)
                 if colors.max() > 1.0:
                     colors = colors / 255
@@ -389,6 +398,13 @@ class LLGaussianSplattingModel(SplatfactoModel):
                         continue
                     new_param = [param[0][-num_new_points:]]
                     self.add_new_params_to_optimizer(optimizers.optimizers[group], new_param)
+            
+            ### Deproject Debug
+            # means_freeze = self.means.data.clone().cpu()
+            # colors_freeze = self.clrs.data.clone().cpu()
+            # self.viewer_control.viser_server.add_point_cloud("relevancy", means_freeze.numpy(force=True), colors_freeze.numpy(force=True), 0.1)
+            # import pdb; pdb.set_trace()
+
             colors = colors.detach()
             deprojected = deprojected.detach()
             del colors

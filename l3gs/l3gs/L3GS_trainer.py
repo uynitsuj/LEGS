@@ -719,7 +719,7 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    def deproject_droidslam_point_cloud(self, image, points, camera, device = 'cuda:0'):
+    def deproject_droidslam_point_cloud(self, image, points, camera, num_samples = 400, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -761,7 +761,7 @@ class Trainer:
         # if non_zero_depth_indices.numel() < num_samples:
         #     num_samples = non_zero_depth_indices.numel()
         # Sample from non-zero depth indices
-        # sampled_indices = non_zero_depth_indices[torch.randint(0, non_zero_depth_indices.shape[0], (num_samples,))]
+        sampled_indices = torch.randint(0, height * width, (num_samples,))
 
         # sampled_depth = flat_depth[sampled_indices] * scale
         # # sampled_depth = flat_depth[sampled_indices]
@@ -775,16 +775,20 @@ class Trainer:
         # ones = torch.ones_like(sampled_depth)
         # P_camera = torch.stack([X_camera, Y_camera, -sampled_depth, ones], dim=1)
 
-        points = torch.cat([torch.reshape(torch.Tensor(points).to(device), (height * width, 3)), torch.ones((height * width, 1), device=device)], dim=1)
-        P_camera = points * scale
+        points = torch.reshape(torch.Tensor(points).to(device), (height * width, 3))
+        points[:, 2] = -points[:, 2]
+        points[:, 1] = -points[:, 1]
+        P_world = points[sampled_indices] * scale
+
+        P_world = torch.cat([P_world, torch.ones((P_world.shape[0], 1), device=device)], dim=1)
         
         homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device=device)
         camera_to_world_homogenized = torch.cat((c2w, homogenizing_row), dim=0)
 
-        P_world = torch.matmul(camera_to_world_homogenized, P_camera.T).T
+        P_world = torch.matmul(camera_to_world_homogenized, P_world.T).T
         
-        import pdb; pdb.set_trace()
-        return P_world[:, :3], torch.from_numpy(flat_image).to(device)
+        # import pdb; pdb.set_trace()
+        return P_world[:, :3], torch.from_numpy(flat_image[sampled_indices]).to(device)
     
     # @profile
     def process_image(self, msg:ImagePose, step, points, clip_dict = None, dino_data = None):
@@ -892,8 +896,9 @@ class Trainer:
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
         else:
-            if points:
-                deprojected, colors = self.deproject_droidslam_point_cloud(image_data, points, dataset_cam)
+            if self.done_scale_calc and points:
+                frame1 = self.pipeline.datamanager.train_dataset.cameras[0]
+                deprojected, colors = self.deproject_droidslam_point_cloud(image_data, points, frame1)
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
             else:
@@ -1138,7 +1143,7 @@ class Trainer:
 
                         R = vtf.SO3.from_matrix(c2w[:3, :3])
                         R = R @ vtf.SO3.from_x_radians(np.pi)
-                        self.viewer_state.camera_handles[idxs[idx]].position = c2w[:3, 3]
+                        self.viewer_state.camera_handles[idxs[idx]].position = c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO
                         self.viewer_state.camera_handles[idxs[idx]].wxyz = R.wxyz
                     print("************\nDone scale calc\n************")
                 
