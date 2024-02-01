@@ -151,7 +151,7 @@ class TricamTrainerNode(Node):
 
         self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points))
 
-        # self.trainer_.image_add_callback_queue.append(msg.image_poses[1])
+        # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None))
 
         # self.trainer_.image_add_callback_queue.append(msg.image_poses[2])
 
@@ -210,6 +210,7 @@ class Trainer:
 
         self.viewer_state = None
         self.image_add_callback_queue = []
+        self.add_to_clip_queue = []
         self.image_process_queue = []
         self.query_diff_queue = []
         self.query_diff_size = 5*3
@@ -719,7 +720,7 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    def deproject_droidslam_point_cloud(self, image, points, camera, num_samples = 400, device = 'cuda:0'):
+    def deproject_droidslam_point_cloud(self, image, points, camera, num_samples = 500, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -901,25 +902,24 @@ class Trainer:
                 deprojected, colors = self.deproject_droidslam_point_cloud(image_data, points, frame1)
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
-            else:
-
-                project_interval = 3
-                rs_interval = 3
-                if self.done_scale_calc and msg.depth.encoding != '' and idx % rs_interval == 0:
-                    depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
-                    depth = depth.unsqueeze(0).unsqueeze(0)
-                    if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
-                        import torch.nn.functional as F
-                        depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
-                    deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
-                    self.deprojected_queue.extend(deprojected)
-                    self.colors_queue.extend(colors)
-                elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
-                    depth = self.pipeline.monodepth_inference(image_data.numpy())
-                    # depth = torch.rand((1,1,480,640))
-                    deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam) #, num_samples = 40)
-                    self.deprojected_queue.extend(deprojected)
-                    self.colors_queue.extend(colors)
+            # else:
+            #     project_interval = 3
+            #     rs_interval = 3
+            #     if self.done_scale_calc and msg.depth.encoding != '' and idx % rs_interval == 0:
+            #         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
+            #         depth = depth.unsqueeze(0).unsqueeze(0)
+            #         if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
+            #             import torch.nn.functional as F
+            #             depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
+            #         deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+            #         self.deprojected_queue.extend(deprojected)
+            #         self.colors_queue.extend(colors)
+            #     elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
+            #         depth = self.pipeline.monodepth_inference(image_data.numpy())
+            #         # depth = torch.rand((1,1,480,640))
+            #         deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam) #, num_samples = 40)
+            #         self.deprojected_queue.extend(deprojected)
+            #         self.colors_queue.extend(colors)
 
 
     # def add_to_clip(clip_dict = None):
@@ -1062,7 +1062,7 @@ class Trainer:
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
             step = 0
-            num_add = 32
+            num_add = 50
             self.imgidx = 0
             
             while True:
@@ -1082,7 +1082,7 @@ class Trainer:
                         self.query_diff_queue.append(msg)
 
                     else:
-                        self.add_img_callback(msg)
+                        self.add_to_clip_queue.append(msg)
                         self.image_process_queue.append((msg, points))
                         self.imgidx += 1
 
@@ -1093,6 +1093,9 @@ class Trainer:
                     message, pts = self.image_process_queue.pop(0)
                     self.process_image(message, step, pts)
                 
+                if self.train_lerf:
+                    self.add_img_callback(self.add_to_clip_queue.pop(0))
+
                 if self.train_lerf and not self.clip_out_queue.empty():
                     print("adding clip pyramid embeddings")
                     self.pipeline.add_to_clip(self.clip_out_queue.get(), step)
