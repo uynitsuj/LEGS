@@ -413,13 +413,16 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         Returns a Camera instead of raybundle"""
         # Make sure to re-populate the unseen cameras list if we have exhausted it
+        # if len(self.train_unseen_cameras) == 0:
+        #     self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
+
         if len(self.train_unseen_cameras) == 0:
             self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
 
-        # print(len(self.train_unseen_cameras))
-        # print(self.train_unseen_cameras)
-            
-        image_idx = self.train_unseen_cameras.pop()
+        image_idx = self.train_unseen_cameras.pop(random.randint(0, len(self.train_unseen_cameras) - 1))
+        # Make sure to re-populate the unseen cameras list if we have exhausted it
+
+        # image_idx = self.train_unseen_cameras.pop()
         # print(image_idx)
         
         

@@ -152,9 +152,9 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """stop culling/splitting at this step WRT screen size of gaussians"""
     random_init: bool = False
     """whether to initialize the positions uniformly randomly (not SFM points)"""
-    num_random: int = 10
+    num_random: int = 35
     """Number of gaussians to initialize if random init is used"""
-    random_scale: float = 20.0
+    random_scale: float = 30.0
     "Size of the cube to initialize random gaussians within"
     ssim_lambda: float = 0.2
     """weight of ssim loss"""
@@ -199,7 +199,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         distances, _ = self.k_nearest_sklearn(self.means.data, 3)
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)/3
+        avg_dist = distances.mean(dim=-1, keepdim=True)
         self.scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
         self.quats = torch.nn.Parameter(random_quat_tensor(self.num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
@@ -353,7 +353,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 deprojected = torch.stack(deprojected, dim=0).to(self.device)
                 colors = torch.stack(colors, dim=0).to(self.device)
                 numpts = len(deprojected)
-                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/3
+                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/9
 
                 if self.clrs == None:
                     self.clrs = torch.nn.Parameter(torch.cat([self.means.detach(), colors], dim=0))
@@ -475,7 +475,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
     def after_train(self, step: int):
         assert step == self.step
         # to save some training time, we no longer need to update those stats post refinement
-        if self.step >= self.config.stop_split_at:
+        if self.step >= self.config.stop_split_at or self.steps_since_add <= 4000:
             return
         with torch.no_grad():
             # keep track of a moving average of grad norms
@@ -509,7 +509,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
     def refinement_after(self, optimizers: Optimizers, step):
         assert step == self.step
-        if self.step <= self.config.warmup_length or self.steps_since_add <= 1000:
+        if self.step <= self.config.warmup_length or self.steps_since_add <= 4000:
             return
         with torch.no_grad():
             # Offset all the opacity reset logic by refine_every so that we don't
@@ -987,23 +987,26 @@ class LLGaussianSplattingModel(SplatfactoModel):
         
         depth_im = None
         # if not self.training:
-        depth_im = rasterize_gaussians(  # type: ignore
-            self.xys,
-            depths,
-            self.radii,
-            conics,
-            num_tiles_hit,  # type: ignore
-            depths[:, None].repeat(1, 3),
-            torch.sigmoid(opacities_crop),
-            H,
-            W,
-            background=torch.ones(3, device=self.device) * 10,
-        )[..., 0:1]  # type: ignore
-        outputs["depth"] = depth_im
+        # print(num_tiles_hit)
+        # print(num_tiles_hit.max())
+        
         
         if self.datamanager.use_clip:
             if self.step - self.datamanager.lerf_step > 500:
-                
+                depth_im = rasterize_gaussians(  # type: ignore
+                self.xys,
+                depths,
+                self.radii,
+                conics,
+                num_tiles_hit,  # type: ignore
+                depths[:, None].repeat(1, 3),
+                torch.sigmoid(opacities_crop),
+                H,
+                W,
+                background=torch.ones(3, device=self.device) * 10,
+                )[..., 0:1]  # type: ignore
+                outputs["depth"] = depth_im
+                    
                 ########################
                 # CLIP Relevancy Field #
                 ########################
@@ -1094,7 +1097,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         gt_rgb = self.get_gt_img(batch["image"])
         metrics_dict = {}
         predicted_rgb = outputs["rgb"]
-        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         metrics_dict["gaussian_count"] = self.num_points
         return metrics_dict
