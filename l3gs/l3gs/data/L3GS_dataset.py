@@ -71,7 +71,7 @@ class L3GSDataset(InputDataset):
                 self.num_images, self.image_height, self.image_width, 3, dtype=torch.float32
             ).to(self.device)
             self.depth_tensor = torch.ones(
-                self.num_images, self.depth_height, self.depth_width, dtype=torch.float32
+                self.num_images, self.depth_height, self.depth_width, 1, dtype=torch.float32
             ).to(self.device)
 
         assert self.cur_size +1 < self.num_images, "Overflowed number of imgs in dataset"
@@ -90,7 +90,7 @@ class L3GSDataset(InputDataset):
         self.cameras.height[self.cur_size] = cam.height
         self.cameras.width[self.cur_size] = cam.width
         self.image_tensor[self.cur_size,...] = img
-        self.depth_tensor[self.cur_size,...] = depth
+        self.depth_tensor[self.cur_size,...] = depth.unsqueeze(-1)
         self.cur_size += 1
         
     def __getitem__(self, idx: int):
