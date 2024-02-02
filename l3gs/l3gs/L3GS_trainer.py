@@ -164,7 +164,7 @@ class TricamTrainerNode(Node):
         print("Appending imagepose to queue",flush=True)
         # self.trainer_.image_add_callback_queue.append(msg)
 
-        self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points))
+        self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors))
 
         # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None))
 
@@ -735,26 +735,20 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    def deproject_droidslam_point_cloud(self, image, points, frame1, dataset_cam, num_samples = 500, device = 'cuda:0'):
+    def deproject_droidslam_point_cloud(self, colors, points, frame1, dataset_cam, num_samples = 500, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
-        height = 60
-        width = 106
+        num_3d_pts = len(points)//3
 
         scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
         H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
         frame1 = frame1.camera_to_worlds.to(device)
-        image = image.to(device)
-
-        image = cv2.resize(image.cpu().numpy(), (width, height))
-
-        flat_image = image.reshape(-1, 3)
 
         # RANDOM SAMPLING
-        sampled_indices = torch.randint(0, height * width, (num_samples,))
+        sampled_indices = torch.randint(0, num_3d_pts, (num_samples,))
 
-        points = torch.reshape(torch.Tensor(points).to(device), (height * width, 3))
+        points = torch.reshape(torch.Tensor(points).to(device), (num_3d_pts, 3))
         points[:, 2] = -points[:, 2]
         points[:, 1] = -points[:, 1]
         P_world = points[sampled_indices] * scale
@@ -765,10 +759,11 @@ class Trainer:
 
         P_world = torch.matmul(frame1_homogenized, P_world.T).T
         
-        return P_world[:, :3], torch.from_numpy(flat_image[sampled_indices]).to(device)
+        colors = torch.reshape(torch.Tensor(colors).to(device), (num_3d_pts, 3))
+        return P_world[:, :3], colors[sampled_indices]
     
     # @profile
-    def process_image(self, msg:ImagePose, step, points, clip_dict = None, dino_data = None):
+    def process_image(self, msg:ImagePose, step, points, clrs, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
         '''
@@ -889,7 +884,7 @@ class Trainer:
             # DROIDSLAM
             if self.done_scale_calc and points:
                 frame1 = self.pipeline.datamanager.train_dataset.cameras[0]
-                deprojected, colors = self.deproject_droidslam_point_cloud(image_data, points, frame1, dataset_cam)
+                deprojected, colors = self.deproject_droidslam_point_cloud(clrs, points, frame1, dataset_cam)
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
             # else:
@@ -964,6 +959,7 @@ class Trainer:
                 optimizers=self.optimizers,
                 grad_scaler=self.grad_scaler,
                 pipeline=self.pipeline,
+                trainer=self
             )
         )
         if self.config.is_viewer_legacy_enabled() and self.local_rank == 0:
@@ -1061,7 +1057,7 @@ class Trainer:
                 has_image_add = len(self.image_add_callback_queue) > 0
                 if has_image_add:
                     #Not sure if we want to loop till the queue is empty or not
-                    msg, points = self.image_add_callback_queue.pop(0)
+                    msg, points, colors = self.image_add_callback_queue.pop(0)
                     # import pdb; pdb.set_trace()
 
                     # if we are actively calculating diff for the current scene,
@@ -1073,15 +1069,15 @@ class Trainer:
 
                     else:
                         self.add_to_clip_queue.append(msg)
-                        self.image_process_queue.append((msg, points))
+                        self.image_process_queue.append((msg, points, colors))
                         self.imgidx += 1
 
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
                         
                 while len(self.image_process_queue) > 0:
-                    message, pts = self.image_process_queue.pop(0)
-                    self.process_image(message, step, pts)
+                    message, pts, clrs = self.image_process_queue.pop(0)
+                    self.process_image(message, step, pts, clrs)
                 
                 if self.train_lerf and len(self.add_to_clip_queue) > 0:
                     self.add_img_callback(self.add_to_clip_queue.pop(0))
@@ -1222,8 +1218,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                # if step_check(step, self.config.steps_per_save):
-                #     self.save_checkpoint(step)
+                if step_check(step, self.config.steps_per_save):
+                    self.save_checkpoint(step)
 
                 writer.write_out_storage()
 

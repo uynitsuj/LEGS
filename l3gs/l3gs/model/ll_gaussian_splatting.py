@@ -74,7 +74,7 @@ def random_quat_tensor(N):
             torch.sqrt(1 - u) * torch.sin(2 * math.pi * v),
             torch.sqrt(1 - u) * torch.cos(2 * math.pi * v),
             torch.sqrt(u) * torch.sin(2 * math.pi * w),
-            torch.sqrt(u) * torch.sin(2 * math.pi * w),
+            torch.sqrt(u) * torch.cos(2 * math.pi * w),
         ],
         dim=-1,
     )
@@ -94,7 +94,7 @@ def SH2RGB(sh):
     C0 = 0.28209479177387814
     return sh * C0 + 0.5
 
-def projection_matrix(znear, zfar, fovx, fovy, device:Union[str,torch.device]="cpu"):
+def projection_matrix(znear, zfar, fovx, fovy, device: Union[str,torch.device]="cpu"):
     """
     Constructs an OpenGL-style perspective projection matrix.
     """
@@ -130,7 +130,7 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """Whether to randomize the background color."""
     num_downscales: int = 0
     """at the beginning, resolution is 1/2^d, where d is this number"""
-    cull_alpha_thresh: float = 0.1
+    cull_alpha_thresh: float = 0.085
     """threshold of opacity for culling gaussians"""
     cull_scale_thresh: float = 0.5
     """threshold of scale for culling gaussians"""
@@ -152,10 +152,12 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """stop culling/splitting at this step WRT screen size of gaussians"""
     random_init: bool = False
     """whether to initialize the positions uniformly randomly (not SFM points)"""
-    num_random: int = 35
+    num_random: int = 15
     """Number of gaussians to initialize if random init is used"""
-    random_scale: float = 30.0
-    "Size of the cube to initialize random gaussians within"
+    random_scale: float = 500.0
+    """Size of the cube to initialize random gaussians within"""
+    init_opacity: float = 0.2
+    """Initial opacity of deprojected gaussians"""
     ssim_lambda: float = 0.2
     """weight of ssim loss"""
     stop_split_at: int = 50000
@@ -199,7 +201,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         distances, _ = self.k_nearest_sklearn(self.means.data, 3)
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)
+        avg_dist = distances.mean(dim=-1, keepdim=True)/5.0
         self.scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
         self.quats = torch.nn.Parameter(random_quat_tensor(self.num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
@@ -239,7 +241,9 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.crop_box: Optional[OrientedBox] = None
         # self.back_color = torch.zeros(3)
         if self.config.background_color == "random":
-            self.background_color = torch.rand(3)
+                self.background_color = torch.tensor(
+                [0.1490, 0.1647, 0.2157]
+                )  # This color is the same as the default background color in Viser. This would only affect the background color when rendering.        
         else:
             self.background_color = get_color(self.config.background_color)
         self.viewer_control = ViewerControl()
@@ -330,13 +334,13 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
         
         param_state["exp_avg"] = torch.cat(
-            [param_state["exp_avg"], torch.zeros_like(param_state["exp_avg"][-1]).repeat(*repeat_dims)],
+            [param_state["exp_avg"], torch.ones_like(param_state["exp_avg"][-1]).repeat(*repeat_dims) * 0.4],
             dim=0,
         )
         param_state["exp_avg_sq"] = torch.cat(
             [
                 param_state["exp_avg_sq"],
-                torch.zeros_like(param_state["exp_avg_sq"][-1]).repeat(*repeat_dims),
+                torch.ones_like(param_state["exp_avg_sq"][-1]).repeat(*repeat_dims) * 0.4,
             ],
             dim=0,
         )
@@ -350,23 +354,17 @@ class LLGaussianSplattingModel(SplatfactoModel):
     def add_deprojected_means(self, deprojected, colors, optimizers: Optimizers, step):
         if len(deprojected) > 0:
             with torch.no_grad():
+
                 deprojected = torch.stack(deprojected, dim=0).to(self.device)
                 colors = torch.stack(colors, dim=0).to(self.device)
                 numpts = len(deprojected)
-                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/7.0
+                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/4.0
 
-                if self.clrs == None:
-                    self.clrs = torch.nn.Parameter(torch.cat([self.means.detach(), colors], dim=0))
-                else:
-                    self.clrs = torch.nn.Parameter(torch.cat([self.clrs.detach(), colors], dim=0))
+                # if self.clrs == None:
+                #     self.clrs = torch.nn.Parameter(torch.cat([self.means.detach(), colors], dim=0))
+                # else:
+                #     self.clrs = torch.nn.Parameter(torch.cat([self.clrs.detach(), colors], dim=0))
 
-
-                self.means = torch.nn.Parameter(torch.cat([self.means.detach(), deprojected], dim=0))
-
-                self.scales = torch.nn.Parameter(torch.cat([self.scales.detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
-                self.quats = torch.nn.Parameter(torch.cat([self.quats.detach(), random_quat_tensor(numpts).float().cuda()]))
-
-                
                 dim_sh = num_sh_bases(self.config.sh_degree)
                 if colors.max() > 1.0:
                     colors = colors / 255
@@ -379,10 +377,14 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 else:
                     CONSOLE.log("use color only optimization with sigmoid activation")
                     shs[:, 0, :3] = torch.logit(colors, eps=1e-10)
+
+                self.means = torch.nn.Parameter(torch.cat([self.means.detach(), deprojected], dim=0))
+                self.scales = torch.nn.Parameter(torch.cat([self.scales.detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
+                self.quats = torch.nn.Parameter(torch.cat([self.quats.detach(), random_quat_tensor(numpts).float().cuda()]))
                 self.features_dc = torch.nn.Parameter(torch.cat([self.features_dc.detach(), shs[:, 0, :].to(self.device)]))
                 self.features_rest = torch.nn.Parameter(torch.cat([self.features_rest.detach(), shs[:, 1:, :].to(self.device)]))
+                self.opacities = torch.nn.Parameter(torch.cat([self.opacities.detach(), torch.logit(self.config.init_opacity * torch.ones(numpts, 1)).to(self.device)], dim=0))
                 
-                self.opacities = torch.nn.Parameter(torch.cat([self.opacities.detach(), torch.logit(0.15 * torch.ones(numpts, 1)).to(self.device)], dim=0))
 
                 self.xys_grad_norm = None
                 self.vis_counts = None
@@ -398,6 +400,19 @@ class LLGaussianSplattingModel(SplatfactoModel):
                         continue
                     new_param = [param[0][-num_new_points:]]
                     self.add_new_params_to_optimizer(optimizers.optimizers[group], new_param)
+
+                # if self.num_points == self.config.num_random + numpts:
+                #     print("removing random init")
+                #     with torch.no_grad():
+                #         mask = torch.cat(
+                #             (
+                #             torch.ones(self.config.num_random, device=self.device, dtype=torch.bool),
+                #             torch.zeros(self.num_points - self.config.num_random, device=self.device, dtype=torch.bool)
+                #             )
+                #         )
+                #         deleted_mask = self.cull_gaussians(mask, max(0.02, self.config.init_opacity - 0.05))
+                #         # import pdb; pdb.set_trace()
+                #         self.remove_from_all_optim(optimizers, deleted_mask)
             
             ### Deproject Debug
             # means_freeze = self.means.data.clone().cpu()
@@ -475,7 +490,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
     def after_train(self, step: int):
         assert step == self.step
         # to save some training time, we no longer need to update those stats post refinement
-        if self.step >= self.config.stop_split_at or self.steps_since_add <= 4000:
+        if self.step >= self.config.stop_split_at or self.steps_since_add <= 600:
             return
         with torch.no_grad():
             # keep track of a moving average of grad norms
@@ -509,7 +524,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
     def refinement_after(self, optimizers: Optimizers, step):
         assert step == self.step
-        if self.step <= self.config.warmup_length or self.steps_since_add <= 4000:
+        if self.step <= self.config.warmup_length or self.steps_since_add <= 600:
             return
         with torch.no_grad():
             # Offset all the opacity reset logic by refine_every so that we don't
@@ -607,6 +622,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
             if deleted_mask is not None:
                 self.remove_from_all_optim(optimizers, deleted_mask)
+            # import pdb; pdb.set_trace()
 
             if self.step < self.config.stop_split_at and self.step % reset_interval == self.config.refine_every:
                 # Reset value is set to be twice of the cull_alpha_thresh
@@ -626,14 +642,17 @@ class LLGaussianSplattingModel(SplatfactoModel):
             self.vis_counts = None
             self.max_2Dsize = None
     
-    def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None):
+    def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None, override_cull_alpha_thresh: Optional[float] = None):
         """
         This function deletes gaussians with under a certain opacity threshold
         extra_cull_mask: a mask indicates extra gaussians to cull besides existing culling criterion
         """
         n_bef = self.num_points
         # cull transparent ones
-        culls = (torch.sigmoid(self.opacities) < self.config.cull_alpha_thresh).squeeze()
+        if override_cull_alpha_thresh is not None:
+            culls = (torch.sigmoid(self.opacities) < override_cull_alpha_thresh).squeeze()
+        else:
+            culls = (torch.sigmoid(self.opacities) < self.config.cull_alpha_thresh).squeeze()
         below_alpha_count = torch.sum(culls).item()
         toobigs_count = 0
         if extra_cull_mask is not None:
@@ -887,7 +906,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         if self.crop_box is not None and not self.training:
             crop_ids = self.crop_box.within(self.means).squeeze()
             if crop_ids.sum() == 0:
-                return {"rgb": background.repeat(camera.height.item(), camera.width.item(), 1)}
+                return {"rgb": background.repeat(int(camera.height.item()), int(camera.width.item()), 1)}
         else:
             crop_ids = None
 
@@ -953,7 +972,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
         )  # type: ignore
         if (self.radii).sum() == 0:
             return {"rgb": background.repeat(int(camera.height.item()), int(camera.width.item()), 1)}
-
+        # if self.num_points == 50:
+        #     import pdb; pdb.set_trace()
         if self.training:
             self.xys.retain_grad()
 
@@ -969,7 +989,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         # rescale the camera back to original dimensions
         camera.rescale_output_resolution(camera_downscale)
         assert (num_tiles_hit > 0).any()  # type: ignore
-        rgb = rasterize_gaussians(  # type: ignore
+        rgb, alpha = rasterize_gaussians(  # type: ignore            
             self.xys,
             depths,
             self.radii,
@@ -980,32 +1000,38 @@ class LLGaussianSplattingModel(SplatfactoModel):
             H,
             W,
             background=background,
+            return_alpha=True,
         )  # type: ignore
+        alpha = alpha[..., None]
         rgb = torch.clamp(rgb, max=1.0)  # type: ignore
-
+        
         outputs["rgb"] = rgb
+        outputs["accumulation"] = alpha
         
         depth_im = None
         # if not self.training:
         # print(num_tiles_hit)
         # print(num_tiles_hit.max())
-        depth_im = rasterize_gaussians(  # type: ignore
-            self.xys,
-            depths,
-            self.radii,
-            conics,
-            num_tiles_hit,  # type: ignore
-            depths[:, None].repeat(1, 3),
-            torch.sigmoid(opacities_crop),
-            H,
-            W,
-            background=torch.ones(3, device=self.device) * 10,
-        )[..., 0:1]  # type: ignore
-        outputs["depth"] = depth_im
+        # import pdb; pdb.set_trace()
+        # print(torch.cumsum(num_tiles_hit, dim=0, dtype=torch.int32))
+        if self.steps_since_add > 1000:
+            depth_im = rasterize_gaussians(  # type: ignore
+                self.xys,
+                depths,
+                self.radii,
+                conics,
+                num_tiles_hit,  # type: ignore
+                depths[:, None].repeat(1, 3),
+                torch.sigmoid(opacities_crop),
+                H,
+                W,
+                background=torch.ones(3, device=self.device),
+            )[..., 0:1]  # type: ignore
+            depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
+            outputs["depth"] = depth_im
         
         if self.datamanager.use_clip:
             if self.step - self.datamanager.lerf_step > 500:
-                
                     
                 ########################
                 # CLIP Relevancy Field #
@@ -1128,7 +1154,11 @@ class LLGaussianSplattingModel(SplatfactoModel):
         # simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
         loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 # + self.config.ssim_lambda * simloss
 
-        # import pdb; pdb.set_trace()
+        # if "depth" in outputs.keys() and self.steps_since_add > 2000:
+        #     import pdb; pdb.set_trace()
+        #     assert outputs["depth"].shape == batch["depth"].shape
+        #     depth_loss = torch.abs(outputs["depth"] - batch["depth"].to(self.device))
+        #     loss_dict["depth_loss"] = depth_loss
 
         if self.config.use_scale_regularization and self.step % 10 == 0:
             scale_exp = torch.exp(self.scales)
