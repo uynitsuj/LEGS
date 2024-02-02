@@ -431,6 +431,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         data = copy(self.cached_train[image_idx])
         # import pdb; pdb.set_trace()
         data["image"] = data["image"].to(self.device)
+        data["depth"] = data["depth"].to(self.device)
         # end = time.time()
         # elapsed = str((end-start)*1e3)
         # print("copy time: "+ elapsed + "(ms)")
@@ -541,10 +542,11 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
 
     # @profile
-    def process_image(self, img:torch.tensor, cam: Cameras, clip, dino):
+    def process_image(self, img:torch.Tensor, depth:torch.Tensor, cam: Cameras, clip, dino):
         # ----------------- Handling the IMAGE ----------------
         # raise NotImplementedError
-        self.train_dataset.add_image(img,cam)
+        # import pdb; pdb.set_trace()
+        self.train_dataset.add_image(img,depth,cam)
         self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
         
         data = self.train_dataset[len(self.train_dataset)-1]

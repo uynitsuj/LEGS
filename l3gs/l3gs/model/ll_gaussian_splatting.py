@@ -132,11 +132,11 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """at the beginning, resolution is 1/2^d, where d is this number"""
     cull_alpha_thresh: float = 0.1
     """threshold of opacity for culling gaussians"""
-    cull_scale_thresh: float = 2.9
+    cull_scale_thresh: float = 0.5
     """threshold of scale for culling gaussians"""
-    reset_alpha_every: int = 60
+    reset_alpha_every: int = 30
     """Every this many refinement steps, reset the alpha"""
-    densify_grad_thresh: float = 0.00005
+    densify_grad_thresh: float = 0.0002
     """threshold of positional gradient norm for densifying gaussians"""
     densify_size_thresh: float = 0.01
     """below this size, gaussians are *duplicated*, otherwise split"""
@@ -144,9 +144,9 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """number of samples to split gaussians into"""
     sh_degree_interval: int = 1000
     """every n intervals turn on another sh degree"""
-    cull_screen_size: float = 0.9
+    cull_screen_size: float = 0.15
     """if a gaussian is more than this percent of screen space, cull it"""
-    split_screen_size: float = 0.0009
+    split_screen_size: float = 0.05
     """if a gaussian is more than this percent of screen space, split it"""
     stop_screen_size_at: int = 4000
     """stop culling/splitting at this step WRT screen size of gaussians"""
@@ -353,7 +353,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 deprojected = torch.stack(deprojected, dim=0).to(self.device)
                 colors = torch.stack(colors, dim=0).to(self.device)
                 numpts = len(deprojected)
-                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/9
+                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/7.0
 
                 if self.clrs == None:
                     self.clrs = torch.nn.Parameter(torch.cat([self.means.detach(), colors], dim=0))
@@ -382,7 +382,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 self.features_dc = torch.nn.Parameter(torch.cat([self.features_dc.detach(), shs[:, 0, :].to(self.device)]))
                 self.features_rest = torch.nn.Parameter(torch.cat([self.features_rest.detach(), shs[:, 1:, :].to(self.device)]))
                 
-                self.opacities = torch.nn.Parameter(torch.cat([self.opacities.detach(), torch.logit(0.25 * torch.ones(numpts, 1)).to(self.device)], dim=0))
+                self.opacities = torch.nn.Parameter(torch.cat([self.opacities.detach(), torch.logit(0.15 * torch.ones(numpts, 1)).to(self.device)], dim=0))
 
                 self.xys_grad_norm = None
                 self.vis_counts = None
@@ -989,23 +989,23 @@ class LLGaussianSplattingModel(SplatfactoModel):
         # if not self.training:
         # print(num_tiles_hit)
         # print(num_tiles_hit.max())
-        
+        depth_im = rasterize_gaussians(  # type: ignore
+            self.xys,
+            depths,
+            self.radii,
+            conics,
+            num_tiles_hit,  # type: ignore
+            depths[:, None].repeat(1, 3),
+            torch.sigmoid(opacities_crop),
+            H,
+            W,
+            background=torch.ones(3, device=self.device) * 10,
+        )[..., 0:1]  # type: ignore
+        outputs["depth"] = depth_im
         
         if self.datamanager.use_clip:
             if self.step - self.datamanager.lerf_step > 500:
-                depth_im = rasterize_gaussians(  # type: ignore
-                self.xys,
-                depths,
-                self.radii,
-                conics,
-                num_tiles_hit,  # type: ignore
-                depths[:, None].repeat(1, 3),
-                torch.sigmoid(opacities_crop),
-                H,
-                W,
-                background=torch.ones(3, device=self.device) * 10,
-                )[..., 0:1]  # type: ignore
-                outputs["depth"] = depth_im
+                
                     
                 ########################
                 # CLIP Relevancy Field #
@@ -1127,6 +1127,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
         Ll1 = torch.abs(gt_img - pred_img).mean()
         # simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
         loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 # + self.config.ssim_lambda * simloss
+
+        # import pdb; pdb.set_trace()
 
         if self.config.use_scale_regularization and self.step % 10 == 0:
             scale_exp = torch.exp(self.scales)
