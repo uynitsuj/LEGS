@@ -92,6 +92,21 @@ def pop_n_elements(deque_obj, n):
         popped_elements.append(deque_obj.popleft())
     return popped_elements
 
+def inverse_SE3(A):
+    # A is expected to be a 4x4 SE(3) matrix
+    R = A[:3, :3]  # Extract the rotation part
+    t = A[:3, 3]   # Extract the translation part
+
+    R_inv = R.t()  # Transpose of R for the inverse rotation
+    t_inv = -torch.matmul(R_inv, t)  # Apply inverse rotation to the negated translation
+
+    # Construct the inverse SE(3) matrix
+    A_inv = torch.eye(4)  # Start with an identity matrix
+    A_inv[:3, :3] = R_inv
+    A_inv[:3, 3] = t_inv
+
+    return A_inv
+
 
 @dataclass
 class TrainerConfig(ExperimentConfig):
@@ -661,7 +676,7 @@ class Trainer:
             print(poses, affected_gaussians_idxs)
         # TODO: mask out regions in all training images
     
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 250, device = 'cuda:0'):
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 800, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -720,61 +735,24 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    def deproject_droidslam_point_cloud(self, image, points, camera, num_samples = 500, device = 'cuda:0'):
+    def deproject_droidslam_point_cloud(self, image, points, frame1, dataset_cam, num_samples = 500, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
-
-        scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        # import pdb; pdb.set_trace()
-        H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
-        # c2w = camera.camera_to_worlds.cpu()
-        # depth_image = depth_image.cpu()
-        # image = image.cpu()
-        c2w = camera.camera_to_worlds.to(device)
-        # depth_image = depth_image.to(device)
-        image = image.to(device)
-        # fx = camera.fx.item()
-        # fy = camera.fy.item()
-        # cx = camera.cx.item()
-        # cy = camera.cy.item()
-
         height = 60
         width = 106
 
+        scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+        H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
+        frame1 = frame1.camera_to_worlds.to(device)
+        image = image.to(device)
+
         image = cv2.resize(image.cpu().numpy(), (width, height))
 
-        # grid_x, grid_y = torch.meshgrid(torch.arange(width, device = device), torch.arange(height, device = device), indexing='ij')
-        # grid_x = grid_x.transpose(0,1).float()
-        # grid_y = grid_y.transpose(0,1).float()
-
-        # flat_grid_x = grid_x.reshape(-1)
-        # flat_grid_y = grid_y.reshape(-1)
-        # flat_depth = depth_image[0, 0].reshape(-1)
         flat_image = image.reshape(-1, 3)
 
-        ### simple uniform sampling approach
-        # num_points = flat_depth.shape[0]
-        # sampled_indices = torch.randint(0, num_points, (num_samples,))
-        # non_zero_depth_indices = torch.nonzero(flat_depth != 0).squeeze()
-
-        # Ensure there are enough non-zero depth indices to sample from
-        # if non_zero_depth_indices.numel() < num_samples:
-        #     num_samples = non_zero_depth_indices.numel()
-        # Sample from non-zero depth indices
+        # RANDOM SAMPLING
         sampled_indices = torch.randint(0, height * width, (num_samples,))
-
-        # sampled_depth = flat_depth[sampled_indices] * scale
-        # # sampled_depth = flat_depth[sampled_indices]
-        # sampled_grid_x = flat_grid_x[sampled_indices]
-        # sampled_grid_y = flat_grid_y[sampled_indices]
-        # sampled_image = flat_image[sampled_indices]
-
-        # X_camera = (sampled_grid_x - width/2) * sampled_depth / fx
-        # Y_camera = -(sampled_grid_y - height/2) * sampled_depth / fy
-
-        # ones = torch.ones_like(sampled_depth)
-        # P_camera = torch.stack([X_camera, Y_camera, -sampled_depth, ones], dim=1)
 
         points = torch.reshape(torch.Tensor(points).to(device), (height * width, 3))
         points[:, 2] = -points[:, 2]
@@ -782,13 +760,11 @@ class Trainer:
         P_world = points[sampled_indices] * scale
 
         P_world = torch.cat([P_world, torch.ones((P_world.shape[0], 1), device=device)], dim=1)
-        
-        homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=c2w.dtype, device=device)
-        camera_to_world_homogenized = torch.cat((c2w, homogenizing_row), dim=0)
+        homogenizing_row = torch.tensor([[0, 0, 0, 1]], dtype=frame1.dtype, device=device)
+        frame1_homogenized = torch.cat((frame1, homogenizing_row), dim=0)
 
-        P_world = torch.matmul(camera_to_world_homogenized, P_world.T).T
+        P_world = torch.matmul(frame1_homogenized, P_world.T).T
         
-        # import pdb; pdb.set_trace()
         return P_world[:, :3], torch.from_numpy(flat_image[sampled_indices]).to(device)
     
     # @profile
@@ -800,6 +776,8 @@ class Trainer:
         camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         # CONSOLE.print("Adding image to dataset")
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
+        depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
+        # import pdb; pdb.set_trace()
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
@@ -845,7 +823,7 @@ class Trainer:
         # camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
 
         with self.train_lock:
-            self.pipeline.process_image(img = image_data, pose = camera, clip=clip_dict, dino=dino_data)
+            self.pipeline.process_image(img = image_data, depth = depth, pose = camera, clip=clip_dict, dino=dino_data)
         # print("Done processing image")
         image_uint8 = (image_data * 255).detach().type(torch.uint8)
         image_uint8 = image_uint8.permute(2, 0, 1)
@@ -897,9 +875,21 @@ class Trainer:
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
         else:
+            # REALSENSE DEPTH
+            # rs_interval = 3
+            # if self.done_scale_calc and msg.depth.encoding != '' and idx % rs_interval == 0:
+            #     # depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
+            #     depth = depth.unsqueeze(0).unsqueeze(0)
+            #     if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
+            #         import torch.nn.functional as F
+            #         depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
+            #     deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+            #     self.deprojected_queue.extend(deprojected)
+            #     self.colors_queue.extend(colors)
+            # DROIDSLAM
             if self.done_scale_calc and points:
                 frame1 = self.pipeline.datamanager.train_dataset.cameras[0]
-                deprojected, colors = self.deproject_droidslam_point_cloud(image_data, points, frame1)
+                deprojected, colors = self.deproject_droidslam_point_cloud(image_data, points, frame1, dataset_cam)
                 self.deprojected_queue.extend(deprojected)
                 self.colors_queue.extend(colors)
             # else:
@@ -1093,7 +1083,7 @@ class Trainer:
                     message, pts = self.image_process_queue.pop(0)
                     self.process_image(message, step, pts)
                 
-                if self.train_lerf:
+                if self.train_lerf and len(self.add_to_clip_queue) > 0:
                     self.add_img_callback(self.add_to_clip_queue.pop(0))
 
                 if self.train_lerf and not self.clip_out_queue.empty():

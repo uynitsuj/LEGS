@@ -248,13 +248,14 @@ class L3GSPipeline(VanillaPipeline):
     def process_image(
         self,
         img: torch.Tensor, 
+        depth: torch.Tensor,
         pose: Cameras, 
         clip: dict,
         dino,
     ):
         print("Adding image to train dataset",pose.camera_to_worlds[:3,3].flatten())
         
-        self.datamanager.process_image(img, pose, clip, dino)
+        self.datamanager.process_image(img, depth, pose, clip, dino)
         self.img_count += 1
         # self.datamanager.train_pixel_sampler.nonzero_indices = torch.nonzero(self.datamanager.train_dataset.mask_tensor[0:len(self.datamanager.train_dataset), ..., 0].to(self.device), as_tuple=False)
 
