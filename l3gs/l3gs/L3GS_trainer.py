@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Literal, Optional, Tuple, Type, cast, Dict, DefaultDict
 from collections import defaultdict, deque
+import trimesh
 import viser.transforms as vtf
 import viser
 import torch
@@ -51,6 +52,8 @@ from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
 from l3gs.L3GS_utils import Utils as U
+from l3gs.data.scene_box import SceneBox, OrientedBox
+
 
 TORCH_DEVICE = str
 TRAIN_ITERATION_OUTPUT = Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]
@@ -212,10 +215,10 @@ class Trainer:
         self.colors_queue = deque()
         self.train_lerf = False
         self.begin_differencing = False
-        self.diff_wait_counter = 0
+        self.diff_wait_counter = 5
 
-        self.rgb_diff_pointcloud_queue = deque()
-        self.clip_diff_pointcloud_queue = deque()
+        self.rgb_diff_pointcloud_queue = o3d.geometry.PointCloud()
+        self.clip_diff_pointcloud_queue = o3d.geometry.PointCloud()
 
     def handle_stage_btn(self, handle: ViewerButton):
         import os.path as osp
@@ -396,8 +399,6 @@ class Trainer:
             
     def process_query_diff(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
         self.diff_wait_counter -= 1
-        if self.diff_wait_counter > 0:
-            return
 
         rgb_heatmaps, rgb_heatmap_masks, clip_heatmaps, clip_heatmap_masks, gsplat_outputs_list = [], [], [], [], []
         poses, depths, images = [], [], []
@@ -466,74 +467,135 @@ class Trainer:
         #     point_size=0.3,
         # )
 
-        rgb_boxes, rgb_points_tr = self.pipeline.heatmaps2box(rgb_heatmaps, rgb_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
-        self.rgb_diff_pointcloud_queue.append(rgb_points_tr)
-        if len(rgb_boxes) > 0:
-            # Change detected!
+        rgb_boxes, rgb_points = self.pipeline.heatmaps2box(rgb_heatmaps, rgb_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
+        if rgb_points != []:
+            self.rgb_diff_pointcloud_queue.points.extend(rgb_points.points)
+
+        if self.diff_wait_counter == 0:            
+            clustered_rgb_points, _ = self.rgb_diff_pointcloud_queue.remove_statistical_outlier(len(rgb_points.points) // 10, 0.1)
+            intvector = np.asarray(clustered_rgb_points.cluster_dbscan(eps=0.5, min_points=len(clustered_rgb_points.points) // 100, print_progress=False))
+            if len(np.unique(intvector)) >= 1 and intvector[0] != -1:
+                filtered_points = torch.from_numpy(np.asarray(clustered_rgb_points.points))[intvector == 0]
+            else:
+                filtered_points = torch.from_numpy(np.asarray(clustered_rgb_points.points))
+
+            obox = OrientedBox.from_points(filtered_points, device=self.device)
+            affected_gaussians_idxs = torch.where(obox.within(self.pipeline.model.means.detach().clone()))
+            affected_gaussians_means = self.pipeline.model.means.detach()[affected_gaussians_idxs]
+
+            affected_rgb_points_tr = trimesh.PointCloud(np.asarray(affected_gaussians_means.detach().cpu().numpy()))
+            affected_rgb_points_tr.visual.vertex_colors = np.ones((len(affected_gaussians_means), 3)) * 0.5
+            clustered_rgb_points_tr = trimesh.PointCloud(filtered_points)
+            clustered_rgb_points_tr.visual.vertex_colors = np.ones((len(filtered_points), 3))
+            all_rgb_points_tr = trimesh.PointCloud(np.asarray(self.rgb_diff_pointcloud_queue.points))
+            all_rgb_points_tr.visual.vertex_colors = np.array([[1, 0, 1]]).repeat(all_rgb_points_tr.shape[0], axis=0)
+
+            # self.diff_wait_counter = 5
+            self.rgb_diff_pointcloud_queue = o3d.geometry.PointCloud()
+                            
+            # TODO: cluster/filter the pcd and fit a bounding box to it
+                # look at localize_query_cb()
             self.viewer_state.viser_server.add_point_cloud(
-                '/rgb_diff_ptcld',
-                points=rgb_points_tr.vertices * 10,
-                colors=rgb_points_tr.visual.vertex_colors[:, :3],
+                '/accumulated_rgb_diff_ptcld',
+                points=all_rgb_points_tr.vertices * 10,
+                colors=all_rgb_points_tr.visual.vertex_colors[:, :3],
+            )
+            self.viewer_state.viser_server.add_point_cloud(
+                '/filtered_rgb_diff_ptcld',
+                points=clustered_rgb_points_tr.vertices * 10,
+                colors=clustered_rgb_points_tr.visual.vertex_colors[:, :3],
+            )
+            self.viewer_state.viser_server.add_point_cloud(
+                '/affected_rgb_diff_ptcld',
+                points=affected_rgb_points_tr.vertices * 10,
+                colors=affected_rgb_points_tr.visual.vertex_colors[:, :3],
             )
 
-            for obox_ind, obox in enumerate(rgb_boxes):
-                import trimesh
+            bbox = trimesh.creation.box(
+                extents=obox.S.cpu().numpy() * 10
+            )
+            bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
+                f"/rgb_bbox",
+                bbox,
+                # scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale,
+                wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
+                position=obox.T.cpu().numpy() * 10,
+            )
+
+        print(">>> using clip (heatmap):", self.pipeline.use_clip)
+        if self.pipeline.use_clip:
+            clip_boxes, clip_points = self.pipeline.heatmaps2box(clip_heatmaps, clip_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
+            if clip_points != []:
+                self.clip_diff_pointcloud_queue.points.extend(clip_points.points)
+            print('queue:', self.clip_diff_pointcloud_queue, self.diff_wait_counter)
+
+            clip_points_tr = trimesh.PointCloud(np.asarray(clip_points.points))
+            clip_points_tr.visual.vertex_colors = np.array([[1, 0, 1]]).repeat(clip_points_tr.shape[0], axis=0)
+            self.viewer_state.viser_server.add_point_cloud(
+                f'/clip_{self.diff_wait_counter}_cld',
+                points=clip_points_tr.vertices * 10,
+                colors=clip_points_tr.visual.vertex_colors[:, :3],
+            )
+
+            if self.diff_wait_counter == 0:       
+                clustered_clip_points, _ = self.clip_diff_pointcloud_queue.remove_statistical_outlier(len(clip_points.points) // 10, 0.1)
+                intvector = np.asarray(clustered_clip_points.cluster_dbscan(eps=0.5, min_points=len(clustered_clip_points.points) // 100, print_progress=False))
+                if len(np.unique(intvector)) >= 1 and intvector[0] != -1:
+                    filtered_points = torch.from_numpy(np.asarray(clustered_clip_points.points))[intvector == 0]
+                else:
+                    filtered_points = torch.from_numpy(np.asarray(clustered_clip_points.points))
+
+                print('filtered_points:', filtered_points.shape)
+                obox = OrientedBox.from_points(filtered_points, device=self.device)
+                affected_gaussians_idxs = torch.where(obox.within(self.pipeline.model.means.detach().clone()))
+                affected_gaussians_means = self.pipeline.model.means.detach()[affected_gaussians_idxs]
+                print('affected:', affected_gaussians_means.shape)
+
+                affected_clip_points_tr = trimesh.PointCloud(np.asarray(affected_gaussians_means.detach().cpu().numpy()))
+                affected_clip_points_tr.visual.vertex_colors = np.ones((len(affected_gaussians_means), 3)) * 0.5
+                clustered_clip_points_tr = trimesh.PointCloud(filtered_points)
+                clustered_clip_points_tr.visual.vertex_colors = np.ones((len(filtered_points), 3))
+                all_clip_points_tr = trimesh.PointCloud(np.asarray(self.clip_diff_pointcloud_queue.points))
+                all_clip_points_tr.visual.vertex_colors = np.array([[1, 0, 1]]).repeat(all_clip_points_tr.shape[0], axis=0)
+
+                # self.diff_wait_counter = 5
+                self.clip_diff_pointcloud_queue = o3d.geometry.PointCloud()
+                print('reset queue')
+                print('visualizing...')
+                                
+                # TODO: cluster/filter the pcd and fit a bounding box to it
+                    # look at localize_query_cb()
+                self.viewer_state.viser_server.add_point_cloud(
+                    '/accumulated_clip_diff_ptcld',
+                    points=all_clip_points_tr.vertices * 10,
+                    colors=all_clip_points_tr.visual.vertex_colors[:, :3],
+                )
+                self.viewer_state.viser_server.add_point_cloud(
+                    '/filtered_clip_diff_ptcld',
+                    points=clustered_clip_points_tr.vertices * 10,
+                    colors=clustered_clip_points_tr.visual.vertex_colors[:, :3],
+                )
+                self.viewer_state.viser_server.add_point_cloud(
+                    '/affected_clip_diff_ptcld',
+                    points=affected_clip_points_tr.vertices * 10,
+                    colors=affected_clip_points_tr.visual.vertex_colors[:, :3],
+                )
+
                 bbox = trimesh.creation.box(
                     extents=obox.S.cpu().numpy() * 10
                 )
                 bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
-                    f"/rgb_bbox_{obox_ind}",
+                    f"/clip_bbox",
                     bbox,
                     # scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale,
                     wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
                     position=obox.T.cpu().numpy() * 10,
                 )
-                print("just visualized the box.")
-                affected_gaussians_idxs = self.pipeline.bbox2gaussians(obox)
 
-            self.diff_wait_counter = 5
-            print('RGB:', affected_gaussians_idxs)
-
-        print(">>> using clip (heatmap):", self.pipeline.use_clip)
-        if self.pipeline.use_clip:
-            clip_boxes, clip_points_tr = self.pipeline.heatmaps2box(clip_heatmaps, clip_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
-            self.clip_diff_pointcloud_queue.append(clip_points_tr)
-
-            if len(self.clip_diff_pointcloud_queue) > 5:
-                pcd = o3d.geometry.PointCloud()
-                pcd.points = o3d.utility.Vector3dVector(self.clip_diff_pointcloud_queue.popleft().vertices)
-                while self.clip_diff_pointcloud_queue:
-                    pcd.points.extend(o3d.utility.Vector3dVector(self.clip_diff_pointcloud_queue.popleft().vertices))
-                
-                # TODO: cluster/filter the pcd and fit a bounding box to it
-                    # look at localize_query_cb()
-
-            if len(clip_boxes) > 0:
-                # Change detected!
-                self.viewer_state.viser_server.add_point_cloud(
-                    '/clip_diff_ptcld',
-                    points=clip_points_tr.vertices * 10,
-                    colors=clip_points_tr.visual.vertex_colors[:, :3] * 0.5,
-                )
-
-                for obox_ind, obox in enumerate(clip_boxes):
-                    import trimesh
-                    bbox = trimesh.creation.box(
-                        extents=obox.S.cpu().numpy() * 10
-                    )
-                    bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
-                        f"/clip_bbox_{obox_ind}",
-                        bbox,
-                        # scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale,
-                        wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
-                        position=obox.T.cpu().numpy() * 10,
-                    )
-                    print("just visualized the box.")
-                    affected_gaussians_idxs = self.pipeline.bbox2gaussians(obox)
-
+            if self.diff_wait_counter == 0:
+                import pdb; pdb.set_trace()
                 self.diff_wait_counter = 5
-                print('CLIP:', affected_gaussians_idxs)
-
+        print('done displaying')
         # TODO: mask out regions in all training images
         
     
@@ -821,7 +883,7 @@ class Trainer:
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
-                    if self.calculate_diff and self.imgidx > 5: #and self.begin_differencing::
+                    if self.calculate_diff and self.begin_differencing:
                         self.query_diff_queue.append(msg)
 
                     self.add_img_callback(msg)
@@ -988,8 +1050,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
 
-                if step_check(step, self.config.steps_per_save):
-                    self.save_checkpoint(step)
+                # if step_check(step, self.config.steps_per_save):
+                #     self.save_checkpoint(step)
 
                 writer.write_out_storage()
 
@@ -1177,7 +1239,10 @@ class Trainer:
             # elapsed = str((end-start)*1e3)
             # print("get_train_loss time: "+ elapsed + "(ms)")
             loss = functools.reduce(torch.add, loss_dict.values())
-        self.grad_scaler.scale(loss).backward()  # type: ignore
+        try:
+            self.grad_scaler.scale(loss).backward()  # type: ignore
+        except:
+            import pdb; pdb.set_trace()
         needs_step = [
             group
             for group in self.optimizers.parameters.keys()

@@ -337,12 +337,14 @@ class L3GSPipeline(VanillaPipeline):
         return depth
 
     def query_diff_clip(self, image: torch.Tensor, pose: Cameras, image_scale: float = 0.25, thres: float = 0.4, vis_verbose: bool = False):
-        clip_ground_truth_image = torch.norm(image, dim=-1).reshape((120, 212))
-        clip_ground_truth_image = clip_ground_truth_image - torch.min(clip_ground_truth_image)
-        clip_ground_truth_image = clip_ground_truth_image / (torch.max(clip_ground_truth_image) - torch.min(clip_ground_truth_image))
-        clip_ground_truth_image = clip_ground_truth_image.to(torch.float32)
-        clip_ground_truth_image_resized_cv2 = cv2.resize(clip_ground_truth_image.cpu().detach().numpy(), (848,480), interpolation=cv2.INTER_AREA)
+        clip_ground_truth_image = torch.norm(image, dim=-1).reshape((120, 212)) #phi_2d
+        clip_ground_truth_image_normed = clip_ground_truth_image - torch.min(clip_ground_truth_image)
+        clip_ground_truth_image_normed = clip_ground_truth_image_normed / (torch.max(clip_ground_truth_image_normed) - torch.min(clip_ground_truth_image_normed))
+        clip_ground_truth_image_normed = clip_ground_truth_image_normed.to(torch.float32)
+        clip_ground_truth_image_resized_cv2 = cv2.resize(clip_ground_truth_image_normed.cpu().detach().numpy(), (848,480), interpolation=cv2.INTER_AREA)
         plt.imsave('clip_ground_truth.png', clip_ground_truth_image_resized_cv2)
+        plt.imsave('image.png', image.cpu().detach().numpy())
+        print("SHAPE OF IMAGE", image.shape)
 
         gsplat_outputs = self.model.get_outputs_full_clip(pose.to(self.device))
         gsplat_outputs['rgb'] = gsplat_outputs['rgb'].detach()
@@ -351,30 +353,32 @@ class L3GSPipeline(VanillaPipeline):
         if 'clip' not in gsplat_outputs.keys():
             return torch.zeros_like(image), torch.zeros_like(image), gsplat_outputs
 
-        gsplat_outputs['clip'] = gsplat_outputs['clip'].detach()
         gsplat_outputs['clip_scale'] = gsplat_outputs['clip_scale'].detach()
 
         # rendered clip
-        clip_output = gsplat_outputs['clip'].detach()
+        clip_output = gsplat_outputs['clip'].detach() #phi_lerf
 
         # rendered image clip
         rendered_image = gsplat_outputs['rgb'].detach()
-        rendered_image_clip, rendered_points = self.get_2d_embeds(rendered_image, image_scale.item(), self)
+        rendered_image_clip, rendered_points = self.get_2d_embeds(rendered_image, image_scale.item(), self) #phi_rend
+        print("SHAPE OF POINTS", rendered_points.shape)
 
         # shift and renorm
-        shift = clip_output - rendered_image_clip
-        diff = image - shift
-        renormed_diff = diff - torch.min(diff)
-        renormed_diff = diff / (torch.max(diff) - torch.min(diff))
+        shift = clip_output - rendered_image_clip #shift = phi_lerf - phi_rend
+        diff = image - shift #phi_2d - (phi_lerf - phi_rend)
+        # renormed_diff = diff - torch.min(diff)
+        # renormed_diff = diff / (torch.max(diff) - torch.min(diff))
+        renormed_diff = diff / torch.norm(diff, dim=-1, keepdim=True)
 
         heatmap = torch.norm(renormed_diff, dim=-1).reshape((120, 212))
         heatmap_resized_cv2 = cv2.resize(heatmap.cpu().detach().numpy(), (848,480), interpolation=cv2.INTER_AREA)
         plt.imsave('clip_diff_renormed.png', heatmap_resized_cv2)
 
         # compute final clip diff
-        final_clip_diff = image * renormed_diff
-        heatmap = torch.norm(final_clip_diff, dim=-1).reshape((120, 212))
-        heatmap_mask = heatmap > thres
+        # final_clip_diff = image * renormed_diff
+        final_clip_diff = -torch.einsum('ij,ij->i', clip_output, renormed_diff)
+        heatmap = final_clip_diff.reshape((120, 212))
+        heatmap_mask = heatmap > torch.quantile(heatmap, 0.95, interpolation='linear')
         heatmap_resized_cv2 = cv2.resize(heatmap.cpu().detach().numpy(), (848,480), interpolation=cv2.INTER_AREA)
         heatmap_mask_resized_cv2 = cv2.resize(heatmap_mask.cpu().detach().numpy().astype(np.uint8), (848,480), interpolation=cv2.INTER_AREA)
         plt.imsave('clip_diff_final.png', heatmap_resized_cv2)
@@ -444,7 +448,7 @@ class L3GSPipeline(VanillaPipeline):
         depth_distance: List[torch.Tensor], # Realsense depth (z-depth) converted to nerfstudio depth (distance-depth)
         gsplat_outputs_list: List[Dict[str, torch.Tensor]],
         nms : float = None, # apply nms
-    ) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor]], trimesh.PointCloud]:
+    ) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor]], List[o3d.geometry.PointCloud]]:
 
         assert len(heatmaps) == len(depths) == len(poses), "length must be equal"
         assert len(heatmaps) == 1, "length must be 1"
@@ -528,11 +532,12 @@ class L3GSPipeline(VanillaPipeline):
         if len(np.unique(second_intvector)) == 1 and second_intvector[0] == -1:
             return [], []
 
-        list_of_boxes = []
+        list_of_boxes, list_of_points = [], []
         for i in np.unique(second_intvector): # ignore -1
             if i == -1:
                 continue
             points = torch.from_numpy(np.asarray(second_pcd.points))[second_intvector == i]
+            list_of_points.append(points)
             points_proj = points.clone()
 
             obox = OrientedBox.from_points(points_proj, device=self.device)
@@ -551,8 +556,9 @@ class L3GSPipeline(VanillaPipeline):
             # obox.R, obox.T, obox.S = obox.R, obox.T / 10., obox.S / 10.
             list_of_boxes.append(obox)
 
-        points = sum([points_tr], trimesh.PointCloud(vertices=np.array([[0, 0, 0]])))
-        return list_of_boxes, points
+        # points = sum([points_tr], trimesh.PointCloud(vertices=np.array([[0, 0, 0]])))
+        # return list_of_boxes, points
+        return list_of_boxes, second_pcd
     
     def heatmaps2box_old(self, 
         heatmaps: List[torch.Tensor], # list of boolean tensors (HxW)
