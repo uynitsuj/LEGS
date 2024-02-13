@@ -31,8 +31,8 @@ class L3GSDataParserConfig(DataParserConfig):
     num_images: int = 1000
     img_height: int = 480
     img_width: int = 848
-    depth_height: int = 240
-    depth_width: int = 424
+    depth_height: int = 240 # 480
+    depth_width: int = 424 # 848
 
 @dataclass
 class L3GSDataParser(DataParser):
