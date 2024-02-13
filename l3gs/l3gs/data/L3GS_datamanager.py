@@ -432,6 +432,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # import pdb; pdb.set_trace()
         data["image"] = data["image"].to(self.device)
         data["depth"] = data["depth"].to(self.device)
+        # import pdb; pdb.set_trace()
         # end = time.time()
         # elapsed = str((end-start)*1e3)
         # print("copy time: "+ elapsed + "(ms)")

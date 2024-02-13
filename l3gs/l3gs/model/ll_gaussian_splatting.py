@@ -62,6 +62,10 @@ from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils.colors import get_color
 from nerfstudio.utils.rich_utils import CONSOLE
 
+import torch
+from jaxtyping import Float
+from torch import Tensor
+
 def random_quat_tensor(N):
     """
     Defines a random quaternion tensor of shape (N, 4)
@@ -323,8 +327,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             new_param_groups (dict): A dictionary of new parameters to add, categorized by group.
         """
         num_new = new_param_groups[0].shape[0]
-      
-
+        
         param = optimizer.param_groups[0]["params"][0]
 
         param_state = optimizer.state[param]
@@ -490,7 +493,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
     def after_train(self, step: int):
         assert step == self.step
         # to save some training time, we no longer need to update those stats post refinement
-        if self.step >= self.config.stop_split_at or self.steps_since_add <= 600:
+        if self.step >= self.config.stop_split_at:
             return
         with torch.no_grad():
             # keep track of a moving average of grad norms
@@ -524,8 +527,9 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
     def refinement_after(self, optimizers: Optimizers, step):
         assert step == self.step
-        if self.step <= self.config.warmup_length or self.steps_since_add <= 600:
+        if self.step <= self.config.warmup_length:
             return
+        deleted_mask = None
         with torch.no_grad():
             # Offset all the opacity reset logic by refine_every so that we don't
             # save checkpoints right when the opacity is reset (saves every 2k)
@@ -612,10 +616,12 @@ class LLGaussianSplattingModel(SplatfactoModel):
                         ),
                     )
                 )
-
-                deleted_mask = self.cull_gaussians(splits_mask)
+                
+                if self.steps_since_add >= 5500:
+                    deleted_mask = self.cull_gaussians(splits_mask)
             elif self.step >= self.config.stop_split_at and self.config.continue_cull_post_densification:
-                deleted_mask = self.cull_gaussians()
+                if self.steps_since_add >= 5500:
+                    deleted_mask = self.cull_gaussians()
             else:
                 # if we donot allow culling post refinement, no more gaussians will be pruned.
                 deleted_mask = None
@@ -1029,6 +1035,38 @@ class LLGaussianSplattingModel(SplatfactoModel):
             )[..., 0:1]  # type: ignore
             depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
             outputs["depth"] = depth_im
+
+        with torch.no_grad():
+            depth_xys, depth_depths, depth_radii, depth_conics, depth_num_tiles_hit, depth_cov3d = project_gaussians(  # type: ignore
+                means_crop,
+                torch.exp(scales_crop),
+                1,
+                quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+                viewmat.squeeze()[:3, :],
+                projmat.squeeze() @ viewmat.squeeze(),
+                camera.fx.item(),
+                camera.fy.item(),
+                cx//2,
+                cy//2,
+                H//2,
+                W//2,
+                tile_bounds,
+            ) 
+            depth_im = rasterize_gaussians(  # type: ignore
+                depth_xys,
+                depth_depths,
+                depth_radii,
+                depth_conics,
+                depth_num_tiles_hit,  # type: ignore
+                depths[:, None].repeat(1, 3),
+                torch.sigmoid(opacities_crop),
+                H//2,
+                W//2,
+                background=torch.ones(3, device=self.device),
+            )[..., 0:1]  # type: ignore
+            # alpha.resize_(H//2, W//2, 1)
+            # depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
+            outputs["depth_half"] = depth_im
         
         if self.datamanager.use_clip:
             if self.step - self.datamanager.lerf_step > 500:
@@ -1093,6 +1131,51 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 
         return outputs
     
+    def depth_ranking_loss(
+        self,
+        rendered_depth: Float[Tensor, "*batch H W"],
+        gt_depth: Float[Tensor, "*batch H W"],
+        mask: Float[Tensor, "*batch H W"],
+        patch_size: int = 128,
+        num_patches: int = 8,
+        epsilon: float = 1e-6,
+        ) -> Float[Tensor, "*batch"]:
+        """
+        Depth ranking loss as described in the SparseGS paper.
+        Args:
+            rendered_depth: rendered depth image
+            gt_depth: ground truth depth image
+            mask: mask for the depth images. 1 where valid, 0 where invalid
+            patch_size: patch size
+            num_patches: number of patches to sample
+            epsilon: small value to avoid division by zero
+        """
+        # import pdb; pdb.set_trace()
+        b, h, w = rendered_depth.shape
+        # construct patch indices
+        sh = torch.randint(0, h - patch_size, (b, num_patches, patch_size, patch_size))
+        sw = torch.randint(0, w - patch_size, (b, num_patches, patch_size, patch_size))
+        idx_batch = torch.arange(b)[:, None, None, None].repeat(1, num_patches, patch_size, patch_size)
+        idx_rows = torch.arange(patch_size)[None, None, None, :].repeat(b, 1, 1, 1) + sh
+        idx_cols = torch.arange(patch_size)[None, None, None, :].repeat(b, 1, 1, 1) + sw
+        # index into and mask out patches
+        mask_patches = mask[idx_batch, idx_rows, idx_cols]
+        rendered_depth_patches = rendered_depth[idx_batch, idx_rows, idx_cols] * mask_patches
+        gt_depth_patches = gt_depth[idx_batch, idx_rows, idx_cols] * mask_patches
+        # calculate correlation
+        e_xy = torch.mean(rendered_depth_patches * gt_depth_patches, dim=[-1, -2])
+        e_x = torch.mean(rendered_depth_patches, dim=[-1, -2])
+        e_y = torch.mean(gt_depth_patches, dim=[-1, -2])
+        e_x2 = torch.mean(torch.square(rendered_depth_patches), dim=[-1, -2])
+        ex_2 = e_x**2
+        e_y2 = torch.mean(torch.square(gt_depth_patches), dim=[-1, -2])
+        ey_2 = e_y**2
+        corr = (e_xy - e_x * e_y) / (torch.sqrt((e_y2 - ey_2) * (e_x2 - ex_2)) + epsilon)
+        corr = torch.clamp(corr, min=-1, max=1)
+        # calculate loss
+        loss = torch.mean(1 - corr, dim=-1)
+        return loss
+
     def get_gt_img(self, image: torch.Tensor):
         """Compute groundtruth image with iteration dependent downscale factor for evaluation purpose
 
@@ -1154,11 +1237,41 @@ class LLGaussianSplattingModel(SplatfactoModel):
         # simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
         loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 # + self.config.ssim_lambda * simloss
 
-        # if "depth" in outputs.keys() and self.steps_since_add > 2000:
-        #     import pdb; pdb.set_trace()
-        #     assert outputs["depth"].shape == batch["depth"].shape
-        #     depth_loss = torch.abs(outputs["depth"] - batch["depth"].to(self.device))
-        #     loss_dict["depth_loss"] = depth_loss
+        if "depth_half" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
+            
+            assert outputs["depth_half"].shape == batch["depth"].shape
+            gt_depth = batch["depth"].permute(2, 0, 1)
+            pred_depth = outputs["depth_half"].permute(2, 0, 1)
+            mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
+            mask = mask.permute(2, 0, 1)
+            # import pdb; pdb.set_trace()
+            assert pred_depth.shape == gt_depth.shape == mask.shape
+            # import matplotlib.pyplot as plt
+            # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy())
+            # plt.savefig("depth_gt.png")
+            # plt.imshow(outputs["depth_half"].squeeze(-1).detach().cpu().numpy())
+            # plt.savefig("depth_pred.png")
+            # plt.imshow(mask.squeeze(0).cpu().numpy())
+            # plt.savefig("depth_mask.png")
+            # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
+            # plt.savefig("depth_gt_masked.png")
+            # plt.imshow(outputs["depth_half"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
+            # plt.savefig("depth_pred_masked.png")
+            # plt.imshow(outputs["depth"].squeeze(-1).detach().cpu().numpy())
+            # plt.savefig("depth_pred_full.png")
+            # import pdb; pdb.set_trace()
+            depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
+            loss_dict["depth_loss"] = depth_correlation_loss
+        elif "depth" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
+            assert outputs["depth"].shape == batch["depth"].shape
+            gt_depth = batch["depth"].permute(2, 0, 1)
+            pred_depth = outputs["depth"].permute(2, 0, 1)
+            mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
+            mask = mask.permute(2, 0, 1)
+            # import pdb; pdb.set_trace()
+            assert pred_depth.shape == gt_depth.shape == mask.shape
+            depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
+            loss_dict["depth_loss"] = depth_correlation_loss
 
         if self.config.use_scale_regularization and self.step % 10 == 0:
             scale_exp = torch.exp(self.scales)
