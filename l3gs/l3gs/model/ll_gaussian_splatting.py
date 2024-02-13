@@ -62,6 +62,10 @@ from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils.colors import get_color
 from nerfstudio.utils.rich_utils import CONSOLE
 
+import torch
+from jaxtyping import Float
+from torch import Tensor
+
 def random_quat_tensor(N):
     """
     Defines a random quaternion tensor of shape (N, 4)
@@ -74,7 +78,7 @@ def random_quat_tensor(N):
             torch.sqrt(1 - u) * torch.sin(2 * math.pi * v),
             torch.sqrt(1 - u) * torch.cos(2 * math.pi * v),
             torch.sqrt(u) * torch.sin(2 * math.pi * w),
-            torch.sqrt(u) * torch.sin(2 * math.pi * w),
+            torch.sqrt(u) * torch.cos(2 * math.pi * w),
         ],
         dim=-1,
     )
@@ -94,7 +98,7 @@ def SH2RGB(sh):
     C0 = 0.28209479177387814
     return sh * C0 + 0.5
 
-def projection_matrix(znear, zfar, fovx, fovy, device:Union[str,torch.device]="cpu"):
+def projection_matrix(znear, zfar, fovx, fovy, device: Union[str,torch.device]="cpu"):
     """
     Constructs an OpenGL-style perspective projection matrix.
     """
@@ -130,35 +134,37 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """Whether to randomize the background color."""
     num_downscales: int = 0
     """at the beginning, resolution is 1/2^d, where d is this number"""
-    cull_alpha_thresh: float = 0.1
+    cull_alpha_thresh: float = 0.085
     """threshold of opacity for culling gaussians"""
-    cull_scale_thresh: float = 2.9
+    cull_scale_thresh: float = 0.5
     """threshold of scale for culling gaussians"""
-    reset_alpha_every: int = 60
+    reset_alpha_every: int = 30
     """Every this many refinement steps, reset the alpha"""
-    densify_grad_thresh: float = 0.00005
+    densify_grad_thresh: float = 0.0002
     """threshold of positional gradient norm for densifying gaussians"""
-    densify_size_thresh: float = 0.005
+    densify_size_thresh: float = 0.01
     """below this size, gaussians are *duplicated*, otherwise split"""
     n_split_samples: int = 2
     """number of samples to split gaussians into"""
     sh_degree_interval: int = 1000
     """every n intervals turn on another sh degree"""
-    cull_screen_size: float = 0.9
+    cull_screen_size: float = 0.15
     """if a gaussian is more than this percent of screen space, cull it"""
-    split_screen_size: float = 0.005
+    split_screen_size: float = 0.05
     """if a gaussian is more than this percent of screen space, split it"""
     stop_screen_size_at: int = 4000
     """stop culling/splitting at this step WRT screen size of gaussians"""
     random_init: bool = False
     """whether to initialize the positions uniformly randomly (not SFM points)"""
-    num_random: int = 20
+    num_random: int = 15
     """Number of gaussians to initialize if random init is used"""
-    random_scale: float = 10.0
-    "Size of the cube to initialize random gaussians within"
+    random_scale: float = 500.0
+    """Size of the cube to initialize random gaussians within"""
+    init_opacity: float = 0.2
+    """Initial opacity of deprojected gaussians"""
     ssim_lambda: float = 0.2
     """weight of ssim loss"""
-    stop_split_at: int = 30000
+    stop_split_at: int = 50000
     """stop splitting at this step"""
     sh_degree: int = 3
     """maximum degree of spherical harmonics to use"""
@@ -199,7 +205,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         distances, _ = self.k_nearest_sklearn(self.means.data, 3)
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)/3
+        avg_dist = distances.mean(dim=-1, keepdim=True)/5.0
         self.scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
         self.quats = torch.nn.Parameter(random_quat_tensor(self.num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
@@ -239,7 +245,9 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.crop_box: Optional[OrientedBox] = None
         # self.back_color = torch.zeros(3)
         if self.config.background_color == "random":
-            self.background_color = torch.rand(3)
+                self.background_color = torch.tensor(
+                [0.1490, 0.1647, 0.2157]
+                )  # This color is the same as the default background color in Viser. This would only affect the background color when rendering.        
         else:
             self.background_color = get_color(self.config.background_color)
         self.viewer_control = ViewerControl()
@@ -255,6 +263,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.crop_ids = None#torch.ones_like(self.means[:,0],dtype=torch.bool)
         self.dropout_mask = None
         self.original_means = None
+        self.clrs = None
 
         # self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
         #     num_cameras=self.num_train_data, device="cpu"
@@ -318,8 +327,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             new_param_groups (dict): A dictionary of new parameters to add, categorized by group.
         """
         num_new = new_param_groups[0].shape[0]
-      
-
+        
         param = optimizer.param_groups[0]["params"][0]
 
         param_state = optimizer.state[param]
@@ -329,13 +337,13 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
         
         param_state["exp_avg"] = torch.cat(
-            [param_state["exp_avg"], torch.zeros_like(param_state["exp_avg"][-1]).repeat(*repeat_dims)],
+            [param_state["exp_avg"], torch.ones_like(param_state["exp_avg"][-1]).repeat(*repeat_dims) * 0.4],
             dim=0,
         )
         param_state["exp_avg_sq"] = torch.cat(
             [
                 param_state["exp_avg_sq"],
-                torch.zeros_like(param_state["exp_avg_sq"][-1]).repeat(*repeat_dims),
+                torch.ones_like(param_state["exp_avg_sq"][-1]).repeat(*repeat_dims) * 0.4,
             ],
             dim=0,
         )
@@ -349,14 +357,16 @@ class LLGaussianSplattingModel(SplatfactoModel):
     def add_deprojected_means(self, deprojected, colors, optimizers: Optimizers, step):
         if len(deprojected) > 0:
             with torch.no_grad():
+
                 deprojected = torch.stack(deprojected, dim=0).to(self.device)
                 colors = torch.stack(colors, dim=0).to(self.device)
                 numpts = len(deprojected)
-                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/3
-                self.means = torch.nn.Parameter(torch.cat([self.means.detach(), deprojected], dim=0))
+                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/4.0
 
-                self.scales = torch.nn.Parameter(torch.cat([self.scales.detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
-                self.quats = torch.nn.Parameter(torch.cat([self.quats.detach(), random_quat_tensor(numpts).float().cuda()]))
+                # if self.clrs == None:
+                #     self.clrs = torch.nn.Parameter(torch.cat([self.means.detach(), colors], dim=0))
+                # else:
+                #     self.clrs = torch.nn.Parameter(torch.cat([self.clrs.detach(), colors], dim=0))
 
                 dim_sh = num_sh_bases(self.config.sh_degree)
                 if colors.max() > 1.0:
@@ -370,10 +380,14 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 else:
                     CONSOLE.log("use color only optimization with sigmoid activation")
                     shs[:, 0, :3] = torch.logit(colors, eps=1e-10)
+
+                self.means = torch.nn.Parameter(torch.cat([self.means.detach(), deprojected], dim=0))
+                self.scales = torch.nn.Parameter(torch.cat([self.scales.detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
+                self.quats = torch.nn.Parameter(torch.cat([self.quats.detach(), random_quat_tensor(numpts).float().cuda()]))
                 self.features_dc = torch.nn.Parameter(torch.cat([self.features_dc.detach(), shs[:, 0, :].to(self.device)]))
                 self.features_rest = torch.nn.Parameter(torch.cat([self.features_rest.detach(), shs[:, 1:, :].to(self.device)]))
+                self.opacities = torch.nn.Parameter(torch.cat([self.opacities.detach(), torch.logit(self.config.init_opacity * torch.ones(numpts, 1)).to(self.device)], dim=0))
                 
-                self.opacities = torch.nn.Parameter(torch.cat([self.opacities.detach(), torch.logit(0.25 * torch.ones(numpts, 1)).to(self.device)], dim=0))
 
                 self.xys_grad_norm = None
                 self.vis_counts = None
@@ -389,6 +403,26 @@ class LLGaussianSplattingModel(SplatfactoModel):
                         continue
                     new_param = [param[0][-num_new_points:]]
                     self.add_new_params_to_optimizer(optimizers.optimizers[group], new_param)
+
+                # if self.num_points == self.config.num_random + numpts:
+                #     print("removing random init")
+                #     with torch.no_grad():
+                #         mask = torch.cat(
+                #             (
+                #             torch.ones(self.config.num_random, device=self.device, dtype=torch.bool),
+                #             torch.zeros(self.num_points - self.config.num_random, device=self.device, dtype=torch.bool)
+                #             )
+                #         )
+                #         deleted_mask = self.cull_gaussians(mask, max(0.02, self.config.init_opacity - 0.05))
+                #         # import pdb; pdb.set_trace()
+                #         self.remove_from_all_optim(optimizers, deleted_mask)
+            
+            ### Deproject Debug
+            # means_freeze = self.means.data.clone().cpu()
+            # colors_freeze = self.clrs.data.clone().cpu()
+            # self.viewer_control.viser_server.add_point_cloud("relevancy", means_freeze.numpy(force=True), colors_freeze.numpy(force=True), 0.1)
+            # import pdb; pdb.set_trace()
+
             colors = colors.detach()
             deprojected = deprojected.detach()
             del colors
@@ -495,6 +529,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         assert step == self.step
         if self.step <= self.config.warmup_length:
             return
+        deleted_mask = None
         with torch.no_grad():
             # Offset all the opacity reset logic by refine_every so that we don't
             # save checkpoints right when the opacity is reset (saves every 2k)
@@ -581,16 +616,19 @@ class LLGaussianSplattingModel(SplatfactoModel):
                         ),
                     )
                 )
-
-                deleted_mask = self.cull_gaussians(splits_mask)
+                
+                if self.steps_since_add >= 5500:
+                    deleted_mask = self.cull_gaussians(splits_mask)
             elif self.step >= self.config.stop_split_at and self.config.continue_cull_post_densification:
-                deleted_mask = self.cull_gaussians()
+                if self.steps_since_add >= 5500:
+                    deleted_mask = self.cull_gaussians()
             else:
                 # if we donot allow culling post refinement, no more gaussians will be pruned.
                 deleted_mask = None
 
             if deleted_mask is not None:
                 self.remove_from_all_optim(optimizers, deleted_mask)
+            # import pdb; pdb.set_trace()
 
             if self.step < self.config.stop_split_at and self.step % reset_interval == self.config.refine_every:
                 # Reset value is set to be twice of the cull_alpha_thresh
@@ -610,14 +648,17 @@ class LLGaussianSplattingModel(SplatfactoModel):
             self.vis_counts = None
             self.max_2Dsize = None
     
-    def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None):
+    def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None, override_cull_alpha_thresh: Optional[float] = None):
         """
         This function deletes gaussians with under a certain opacity threshold
         extra_cull_mask: a mask indicates extra gaussians to cull besides existing culling criterion
         """
         n_bef = self.num_points
         # cull transparent ones
-        culls = (torch.sigmoid(self.opacities) < self.config.cull_alpha_thresh).squeeze()
+        if override_cull_alpha_thresh is not None:
+            culls = (torch.sigmoid(self.opacities) < override_cull_alpha_thresh).squeeze()
+        else:
+            culls = (torch.sigmoid(self.opacities) < self.config.cull_alpha_thresh).squeeze()
         below_alpha_count = torch.sum(culls).item()
         toobigs_count = 0
         if extra_cull_mask is not None:
@@ -1080,7 +1121,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         if self.crop_box is not None and not self.training:
             crop_ids = self.crop_box.within(self.means).squeeze()
             if crop_ids.sum() == 0:
-                return {"rgb": background.repeat(camera.height.item(), camera.width.item(), 1)}
+                return {"rgb": background.repeat(int(camera.height.item()), int(camera.width.item()), 1)}
         else:
             crop_ids = None
 
@@ -1146,7 +1187,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
         )  # type: ignore
         if (self.radii).sum() == 0:
             return {"rgb": background.repeat(int(camera.height.item()), int(camera.width.item()), 1)}
-
+        # if self.num_points == 50:
+        #     import pdb; pdb.set_trace()
         if self.training:
             self.xys.retain_grad()
 
@@ -1162,7 +1204,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         # rescale the camera back to original dimensions
         camera.rescale_output_resolution(camera_downscale)
         assert (num_tiles_hit > 0).any()  # type: ignore
-        rgb = rasterize_gaussians(  # type: ignore
+        rgb, alpha = rasterize_gaussians(  # type: ignore            
             self.xys,
             depths,
             self.radii,
@@ -1173,30 +1215,71 @@ class LLGaussianSplattingModel(SplatfactoModel):
             H,
             W,
             background=background,
+            return_alpha=True,
         )  # type: ignore
+        alpha = alpha[..., None]
         rgb = torch.clamp(rgb, max=1.0)  # type: ignore
-
+        
         outputs["rgb"] = rgb
+        outputs["accumulation"] = alpha
         
         depth_im = None
         # if not self.training:
-        depth_im = rasterize_gaussians(  # type: ignore
-            self.xys,
-            depths,
-            self.radii,
-            conics,
-            num_tiles_hit,  # type: ignore
-            depths[:, None].repeat(1, 3),
-            torch.sigmoid(opacities_crop),
-            H,
-            W,
-            background=torch.ones(3, device=self.device) * 10,
-        )[..., 0:1]  # type: ignore
-        outputs["depth"] = depth_im
+        # print(num_tiles_hit)
+        # print(num_tiles_hit.max())
+        # import pdb; pdb.set_trace()
+        # print(torch.cumsum(num_tiles_hit, dim=0, dtype=torch.int32))
+        if self.steps_since_add > 1000:
+            depth_im = rasterize_gaussians(  # type: ignore
+                self.xys,
+                depths,
+                self.radii,
+                conics,
+                num_tiles_hit,  # type: ignore
+                depths[:, None].repeat(1, 3),
+                torch.sigmoid(opacities_crop),
+                H,
+                W,
+                background=torch.ones(3, device=self.device),
+            )[..., 0:1]  # type: ignore
+            depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
+            outputs["depth"] = depth_im
+
+        with torch.no_grad():
+            depth_xys, depth_depths, depth_radii, depth_conics, depth_num_tiles_hit, depth_cov3d = project_gaussians(  # type: ignore
+                means_crop,
+                torch.exp(scales_crop),
+                1,
+                quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+                viewmat.squeeze()[:3, :],
+                projmat.squeeze() @ viewmat.squeeze(),
+                camera.fx.item(),
+                camera.fy.item(),
+                cx//2,
+                cy//2,
+                H//2,
+                W//2,
+                tile_bounds,
+            ) 
+            depth_im = rasterize_gaussians(  # type: ignore
+                depth_xys,
+                depth_depths,
+                depth_radii,
+                depth_conics,
+                depth_num_tiles_hit,  # type: ignore
+                depths[:, None].repeat(1, 3),
+                torch.sigmoid(opacities_crop),
+                H//2,
+                W//2,
+                background=torch.ones(3, device=self.device),
+            )[..., 0:1]  # type: ignore
+            # alpha.resize_(H//2, W//2, 1)
+            # depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
+            outputs["depth_half"] = depth_im
         
         if self.datamanager.use_clip:
             if self.step - self.datamanager.lerf_step > 500:
-                
+                    
                 ########################
                 # CLIP Relevancy Field #
                 ########################
@@ -1257,6 +1340,51 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 
         return outputs
     
+    def depth_ranking_loss(
+        self,
+        rendered_depth: Float[Tensor, "*batch H W"],
+        gt_depth: Float[Tensor, "*batch H W"],
+        mask: Float[Tensor, "*batch H W"],
+        patch_size: int = 128,
+        num_patches: int = 8,
+        epsilon: float = 1e-6,
+        ) -> Float[Tensor, "*batch"]:
+        """
+        Depth ranking loss as described in the SparseGS paper.
+        Args:
+            rendered_depth: rendered depth image
+            gt_depth: ground truth depth image
+            mask: mask for the depth images. 1 where valid, 0 where invalid
+            patch_size: patch size
+            num_patches: number of patches to sample
+            epsilon: small value to avoid division by zero
+        """
+        # import pdb; pdb.set_trace()
+        b, h, w = rendered_depth.shape
+        # construct patch indices
+        sh = torch.randint(0, h - patch_size, (b, num_patches, patch_size, patch_size))
+        sw = torch.randint(0, w - patch_size, (b, num_patches, patch_size, patch_size))
+        idx_batch = torch.arange(b)[:, None, None, None].repeat(1, num_patches, patch_size, patch_size)
+        idx_rows = torch.arange(patch_size)[None, None, None, :].repeat(b, 1, 1, 1) + sh
+        idx_cols = torch.arange(patch_size)[None, None, None, :].repeat(b, 1, 1, 1) + sw
+        # index into and mask out patches
+        mask_patches = mask[idx_batch, idx_rows, idx_cols]
+        rendered_depth_patches = rendered_depth[idx_batch, idx_rows, idx_cols] * mask_patches
+        gt_depth_patches = gt_depth[idx_batch, idx_rows, idx_cols] * mask_patches
+        # calculate correlation
+        e_xy = torch.mean(rendered_depth_patches * gt_depth_patches, dim=[-1, -2])
+        e_x = torch.mean(rendered_depth_patches, dim=[-1, -2])
+        e_y = torch.mean(gt_depth_patches, dim=[-1, -2])
+        e_x2 = torch.mean(torch.square(rendered_depth_patches), dim=[-1, -2])
+        ex_2 = e_x**2
+        e_y2 = torch.mean(torch.square(gt_depth_patches), dim=[-1, -2])
+        ey_2 = e_y**2
+        corr = (e_xy - e_x * e_y) / (torch.sqrt((e_y2 - ey_2) * (e_x2 - ex_2)) + epsilon)
+        corr = torch.clamp(corr, min=-1, max=1)
+        # calculate loss
+        loss = torch.mean(1 - corr, dim=-1)
+        return loss
+
     def get_gt_img(self, image: torch.Tensor):
         """Compute groundtruth image with iteration dependent downscale factor for evaluation purpose
 
@@ -1287,7 +1415,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         gt_rgb = self.get_gt_img(batch["image"])
         metrics_dict = {}
         predicted_rgb = outputs["rgb"]
-        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         metrics_dict["gaussian_count"] = self.num_points
         return metrics_dict
@@ -1318,6 +1446,42 @@ class LLGaussianSplattingModel(SplatfactoModel):
         # simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
         loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 # + self.config.ssim_lambda * simloss
 
+        if "depth_half" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
+            
+            assert outputs["depth_half"].shape == batch["depth"].shape
+            gt_depth = batch["depth"].permute(2, 0, 1)
+            pred_depth = outputs["depth_half"].permute(2, 0, 1)
+            mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
+            mask = mask.permute(2, 0, 1)
+            # import pdb; pdb.set_trace()
+            assert pred_depth.shape == gt_depth.shape == mask.shape
+            # import matplotlib.pyplot as plt
+            # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy())
+            # plt.savefig("depth_gt.png")
+            # plt.imshow(outputs["depth_half"].squeeze(-1).detach().cpu().numpy())
+            # plt.savefig("depth_pred.png")
+            # plt.imshow(mask.squeeze(0).cpu().numpy())
+            # plt.savefig("depth_mask.png")
+            # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
+            # plt.savefig("depth_gt_masked.png")
+            # plt.imshow(outputs["depth_half"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
+            # plt.savefig("depth_pred_masked.png")
+            # plt.imshow(outputs["depth"].squeeze(-1).detach().cpu().numpy())
+            # plt.savefig("depth_pred_full.png")
+            # import pdb; pdb.set_trace()
+            depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
+            loss_dict["depth_loss"] = depth_correlation_loss
+        elif "depth" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
+            assert outputs["depth"].shape == batch["depth"].shape
+            gt_depth = batch["depth"].permute(2, 0, 1)
+            pred_depth = outputs["depth"].permute(2, 0, 1)
+            mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
+            mask = mask.permute(2, 0, 1)
+            # import pdb; pdb.set_trace()
+            assert pred_depth.shape == gt_depth.shape == mask.shape
+            depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
+            loss_dict["depth_loss"] = depth_correlation_loss
+
         if self.config.use_scale_regularization and self.step % 10 == 0:
             scale_exp = torch.exp(self.scales)
             scale_reg = (
@@ -1334,7 +1498,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
         if self.training and 'clip' in outputs: 
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
-                outputs["clip"], batch["clip"].to(torch.float32), delta=1.25, reduction="none"
+                outputs["clip"], batch["clip"].to(self.device).to(torch.float32), delta=1.25, reduction="none"
             )
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
 
@@ -1423,12 +1587,14 @@ class LLGaussianSplattingModel(SplatfactoModel):
             # clip_feats = self.gaussian_lerf_field.get_outputs(self.means, self.best_scales[0].to(self.device) * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
 
             # Do K nearest neighbors for each point and then avg the clip hash for each point based on the KNN
-            distances, indicies = self.k_nearest_sklearn(self.means.data, 3, True)
+            # import pdb; pdb.set_trace()
+            means_freeze = self.means.data.clone().cpu()
+            distances, indicies = self.k_nearest_sklearn(means_freeze, 3, True)
             distances = torch.from_numpy(distances).to(self.device)
             indicies = torch.from_numpy(indicies).to(self.device).view(-1)
             weights = torch.sigmoid(self.opacities[indicies].view(-1, 4))
             weights = torch.nn.Softmax(dim=-1)(weights)
-            points = self.means[indicies]
+            points = means_freeze[indicies]
             # clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
             clip_hash_encoding = self.gaussian_lerf_field.get_hash(points)
             clip_hash_encoding = clip_hash_encoding.view(-1, 4, clip_hash_encoding.shape[1])
@@ -1444,16 +1610,17 @@ class LLGaussianSplattingModel(SplatfactoModel):
             # self.crop_ids = (relevancy[..., 0] > self.relevancy_thresh.value)
             
             #Define all crop viewer elements
-            self.crop_points = relevancy[..., 0] > self.relevancy_thresh.value
-            self._crop_center_init = self.means[self.crop_points].mean(dim=0).cpu().numpy()
-            self.original_means = self.means.data.clone()
+            # self.crop_points = relevancy[..., 0] > self.relevancy_thresh.value
+            # self._crop_center_init = self.means[self.crop_points].mean(dim=0).cpu().numpy()
+            self._crop_center_init = means_freeze[relevancy[..., 0].argmax(dim=0).cpu().numpy()].cpu().numpy()
+            # self.original_means = self.means.data.clone()
             
             query = self._crop_center_init / self.viser_scale_ratio
 
             self.viewer_control.viser_server.add_frame(
             "/query",
             axes_length = 15, 
-            axes_radius = 0.025 * 30,
+            axes_radius = 0.025 * 18,
             wxyz=(1.0, 0.0, 0.0, 0.0),
             position=(query[0], query[1], query[2]),
             )

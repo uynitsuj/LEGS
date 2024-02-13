@@ -74,7 +74,7 @@ class L3GSDataManagerConfig(DataManagerConfig):
     """Specifies the image indices to use during eval; if None, uses all."""
     cache_images: Literal["no-cache", "cpu", "gpu"] = "cpu"
     """Whether to cache images in memory. If "numpy", caches as numpy arrays, if "torch", caches as torch tensors."""
-    patch_tile_size_range: Tuple[int, int] = (0.05, 0.5)
+    patch_tile_size_range: Tuple[int, int] = (0.04, 0.45)
     """The range of tile sizes to sample from for patch-based training"""
     patch_tile_size_res: int = 7
     """The number of tile sizes to sample from for patch-based training"""
@@ -413,13 +413,16 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         Returns a Camera instead of raybundle"""
         # Make sure to re-populate the unseen cameras list if we have exhausted it
+        # if len(self.train_unseen_cameras) == 0:
+        #     self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
+
         if len(self.train_unseen_cameras) == 0:
             self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
 
-        # print(len(self.train_unseen_cameras))
-        # print(self.train_unseen_cameras)
-            
-        image_idx = self.train_unseen_cameras.pop()
+        image_idx = self.train_unseen_cameras.pop(random.randint(0, len(self.train_unseen_cameras) - 1))
+        # Make sure to re-populate the unseen cameras list if we have exhausted it
+
+        # image_idx = self.train_unseen_cameras.pop()
         # print(image_idx)
         
         
@@ -428,6 +431,8 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         data = copy(self.cached_train[image_idx])
         # import pdb; pdb.set_trace()
         data["image"] = data["image"].to(self.device)
+        data["depth"] = data["depth"].to(self.device)
+        # import pdb; pdb.set_trace()
         # end = time.time()
         # elapsed = str((end-start)*1e3)
         # print("copy time: "+ elapsed + "(ms)")
@@ -538,10 +543,11 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
 
     # @profile
-    def process_image(self, img:torch.tensor, cam: Cameras, clip, dino):
+    def process_image(self, img:torch.Tensor, depth:torch.Tensor, cam: Cameras, clip, dino):
         # ----------------- Handling the IMAGE ----------------
         # raise NotImplementedError
-        self.train_dataset.add_image(img,cam)
+        # import pdb; pdb.set_trace()
+        self.train_dataset.add_image(img,depth,cam)
         self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
         
         data = self.train_dataset[len(self.train_dataset)-1]

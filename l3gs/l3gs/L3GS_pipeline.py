@@ -37,7 +37,7 @@ from nerfstudio.models.base_model import ModelConfig
 from l3gs.data.utils.sequential_patch_embedding_dataloader import SequentialPatchEmbeddingDataloader
 # from nerfstudio.models.gaussian_splatting import GaussianSplattingModelConfig
 from l3gs.model.ll_gaussian_splatting import LLGaussianSplattingModelConfig
-from l3gs.monodepth.zoedepth_network import ZoeDepthNetworkConfig
+# from l3gs.monodepth.zoedepth_network import ZoeDepthNetworkConfig
 from torch.cuda.amp.grad_scaler import GradScaler
 from torchvision.transforms.functional import resize
 from nerfstudio.configs.base_config import InstantiateConfig
@@ -137,7 +137,7 @@ class L3GSPipelineConfig(VanillaPipelineConfig):
     """specifies the datamanager config"""
     model: ModelConfig = LLGaussianSplattingModelConfig()
     """specifies the model config"""
-    depthmodel:InstantiateConfig = ZoeDepthNetworkConfig()
+    # depthmodel:InstantiateConfig = ZoeDepthNetworkConfig()
     network: BaseImageEncoderConfig = BaseImageEncoderConfig()
     """specifies the vision-language network config"""
 
@@ -190,7 +190,7 @@ class L3GSPipeline(VanillaPipeline):
         )
         self.model.to(device)
 
-        self.depthmodel = config.depthmodel.setup()
+        # self.depthmodel = config.depthmodel.setup()
 
         self.world_size = world_size
         if world_size > 1:
@@ -304,13 +304,14 @@ class L3GSPipeline(VanillaPipeline):
     def process_image(
         self,
         img: torch.Tensor, 
+        depth: torch.Tensor,
         pose: Cameras, 
         clip: dict,
         dino,
     ):
         print("Adding image to train dataset",pose.camera_to_worlds[:3,3].flatten())
         
-        self.datamanager.process_image(img, pose, clip, dino)
+        self.datamanager.process_image(img, depth, pose, clip, dino)
         self.img_count += 1
         # self.datamanager.train_pixel_sampler.nonzero_indices = torch.nonzero(self.datamanager.train_dataset.mask_tensor[0:len(self.datamanager.train_dataset), ..., 0].to(self.device), as_tuple=False)
 

@@ -31,7 +31,8 @@ class L3GSDataParserConfig(DataParserConfig):
     num_images: int = 1000
     img_height: int = 480
     img_width: int = 848
-
+    depth_height: int = 240 # 480
+    depth_width: int = 424 # 848
 
 @dataclass
 class L3GSDataParser(DataParser):
@@ -67,6 +68,8 @@ class L3GSDataParser(DataParser):
 
         image_height = self.config.img_height
         image_width = self.config.img_width
+        depth_height = self.config.depth_height
+        depth_width = self.config.depth_width
         #placeholders
         fx = 1.0
         fy = 1.0
@@ -116,6 +119,8 @@ class L3GSDataParser(DataParser):
             "num_images": self.config.num_images,
             "image_height": image_height,
             "image_width": image_width,
+            "depth_height": depth_height,
+            "depth_width": depth_width
         }
 
         # Pointcloud or random

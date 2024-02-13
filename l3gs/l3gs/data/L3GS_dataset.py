@@ -35,6 +35,8 @@ class L3GSDataset(InputDataset):
         self.num_images = self.metadata["num_images"]
         self.image_height = self.metadata['image_height']
         self.image_width = self.metadata['image_width']
+        self.depth_height = self.metadata['depth_height']
+        self.depth_width = self.metadata['depth_width']
         assert self.num_images > 0
         self.device = device
 
@@ -42,6 +44,10 @@ class L3GSDataset(InputDataset):
 
         self.image_tensor = torch.ones(
             self.num_images, self.image_height, self.image_width, 3, dtype=torch.float32
+        ).to(self.device)
+
+        self.depth_tensor = torch.ones(
+            self.num_images, self.depth_height, self.depth_width, 1, dtype=torch.float32
         ).to(self.device)
 
         self.image_indices = torch.arange(self.num_images)
@@ -57,12 +63,15 @@ class L3GSDataset(InputDataset):
     def __len__(self):
         return self.cur_size
 
-    def add_image(self,img,cam):
+    def add_image(self,img,depth,cam):
         if self.cur_size == 0:
             self.image_height = cam.height
             self.image_width = cam.width
             self.image_tensor = torch.ones(
                 self.num_images, self.image_height, self.image_width, 3, dtype=torch.float32
+            ).to(self.device)
+            self.depth_tensor = torch.ones(
+                self.num_images, self.depth_height, self.depth_width, 1, dtype=torch.float32
             ).to(self.device)
 
         assert self.cur_size +1 < self.num_images, "Overflowed number of imgs in dataset"
@@ -81,6 +90,7 @@ class L3GSDataset(InputDataset):
         self.cameras.height[self.cur_size] = cam.height
         self.cameras.width[self.cur_size] = cam.width
         self.image_tensor[self.cur_size,...] = img
+        self.depth_tensor[self.cur_size,...] = depth.unsqueeze(-1)
         self.cur_size += 1
         
     def __getitem__(self, idx: int):
@@ -89,5 +99,5 @@ class L3GSDataset(InputDataset):
         accessed in the dataloader, but we allow this as well so that we do not
         have to rewrite the several downstream functions.
         """
-        data = {"image_idx": idx, "image": self.image_tensor[idx], "mask": self.mask_tensor[idx]}
+        data = {"image_idx": idx, "image": self.image_tensor[idx], "depth": self.depth_tensor[idx], "mask": self.mask_tensor[idx]}
         return data
