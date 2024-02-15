@@ -1,0 +1,25 @@
+[project]
+name = "l3gs"
+version = "0.1.1"
+requires-python = ">=3.8"
+
+dependencies=[
+    "nerfstudio == 1.0.1",
+    "gsplat == 0.1.3",
+    "nerfstudio@git+https://github.com/nerfstudio-project/nerfstudio@a8e6f8fa3fd6c0ad2f3e681dcf1519e74ad2230f",
+
+    "gsplat@git+https://github.com/nerfstudio-project/gsplat@013352027b02360036addb2beadebf92f67feb3e",
+
+    "Pillow >=9.3.0, <10.0.0",
+    "urllib3==1.26.15",
+    "open-clip-torch==2.23.0",
+    "numpy==1.26.2",
+]
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["l3gs*"]
+
+[project.entry-points.'nerfstudio.method_configs']
+l3gs = 'l3gs.L3GS_config:l3gs_method'
