@@ -6,6 +6,7 @@ from pathlib import Path
 import torch.distributed as dist
 from torch.cuda.amp.grad_scaler import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
+import matplotlib.pyplot as plt
 
 # from nerfstudio.configs import base_config as cfg
 from nerfstudio.models.base_model import Model, ModelConfig
@@ -33,7 +34,7 @@ from dataclasses import dataclass, field
 from nerfstudio.cameras.cameras import Cameras
 from nerfstudio.viewer.viewer_elements import ViewerCheckbox
 from nerfstudio.models.base_model import ModelConfig
-# from l3gs.data.utils.patch_embedding_dataloader import PatchEmbeddingDataloader
+from l3gs.data.utils.patch_embedding_dataloader import PatchEmbeddingDataloader
 from l3gs.data.utils.sequential_patch_embedding_dataloader import SequentialPatchEmbeddingDataloader
 # from nerfstudio.models.gaussian_splatting import GaussianSplattingModelConfig
 from l3gs.model.ll_gaussian_splatting import LLGaussianSplattingModelConfig
@@ -338,13 +339,13 @@ class L3GSPipeline(VanillaPipeline):
         return depth
 
     def query_diff_clip(self, image: torch.Tensor, pose: Cameras, image_scale: float = 0.25, thres: float = 0.4, vis_verbose: bool = False):
-        clip_ground_truth_image = torch.norm(image, dim=-1).reshape((120, 212)) #phi_2d
-        clip_ground_truth_image_normed = clip_ground_truth_image - torch.min(clip_ground_truth_image)
+        clip_ground_truth_image_normed = torch.norm(image, dim=-1).reshape((120, 212)) #phi_2d
+        clip_ground_truth_image_normed = clip_ground_truth_image_normed - torch.min(clip_ground_truth_image_normed)
         clip_ground_truth_image_normed = clip_ground_truth_image_normed / (torch.max(clip_ground_truth_image_normed) - torch.min(clip_ground_truth_image_normed))
         clip_ground_truth_image_normed = clip_ground_truth_image_normed.to(torch.float32)
         clip_ground_truth_image_resized_cv2 = cv2.resize(clip_ground_truth_image_normed.cpu().detach().numpy(), (848,480), interpolation=cv2.INTER_AREA)
+        import matplotlib.pyplot as plt
         plt.imsave('clip_ground_truth.png', clip_ground_truth_image_resized_cv2)
-        plt.imsave('image.png', image.cpu().detach().numpy())
         print("SHAPE OF IMAGE", image.shape)
 
         gsplat_outputs = self.model.get_outputs_full_clip(pose.to(self.device))
@@ -359,8 +360,19 @@ class L3GSPipeline(VanillaPipeline):
         # rendered clip
         clip_output = gsplat_outputs['clip'].detach() #phi_lerf
 
+        import pdb; pdb.set_trace()
+        self.model.image_encoder.set_positives(['mug'])
+        probs = self.model.image_encoder.get_relevancy(gsplat_outputs["clip"].view(-1, self.model.image_encoder.embedding_dim), 0)
+        from nerfstudio.utils.colormaps import apply_colormap
+        color = apply_colormap(probs[..., 0:1])
+        color = color.reshape([120,212,3])
+        color_resized_cv2 = cv2.resize(color.cpu().detach().numpy(), (848,480), interpolation=cv2.INTER_AREA)
+        import matplotlib.pyplot as plt
+        plt.imsave(f"relevancy_{self.model.image_encoder.positives[0]}_rendered.png", color_resized_cv2)
+
         # rendered image clip
         rendered_image = gsplat_outputs['rgb'].detach()
+        # ++6
         rendered_image_clip, rendered_points = self.get_2d_embeds(rendered_image, image_scale.item(), self) #phi_rend
         print("SHAPE OF POINTS", rendered_points.shape)
 
@@ -455,17 +467,17 @@ class L3GSPipeline(VanillaPipeline):
         assert len(heatmaps) == 1, "length must be 1"
 
         hm, hm_mask, image, pose, depth, gsplat_output = heatmaps[0], heatmap_masks[0], images[0], poses[0], depths[0], gsplat_outputs_list[0]
-        if hm.shape[0] == 120:
+        if hm.shape[0] < 480:
             hm = self.resize_image_to_full_size(hm)
-        if hm_mask.shape[0] == 120:
+        if hm_mask.shape[0] < 480:
             hm_mask = self.resize_image_to_full_size(hm_mask.to(torch.float32)).to(torch.bool)
-        if image.shape[0] == 120:
+        if image.shape[0] < 480:
             image = self.resize_image_to_full_size(image)
-        if depth.shape[0] == 120:
+        if depth.shape[0] < 480:
             depth = self.resize_image_to_full_size(depth)
-        if gsplat_output['rgb'].shape[0] == 120:
+        if gsplat_output['rgb'].shape[0] < 480:
             gsplat_output['rgb'] = self.resize_image_to_full_size(gsplat_output['rgb'])
-        if gsplat_output['depth'].shape[0] == 120:
+        if 'depth' in gsplat_output.keys() and gsplat_output['depth'].shape[0] < 480:
             gsplat_output['depth'] = self.resize_image_to_full_size(gsplat_output['depth'])
 
         if torch.sum(hm) == 0:
@@ -480,11 +492,12 @@ class L3GSPipeline(VanillaPipeline):
 
         plt.imsave('component.png', component.detach().cpu().numpy())
         plt.imsave('depth.png', depth.detach().cpu().numpy())
-        plt.imsave('rendered_depth.png', gsplat_output['depth'].squeeze(2).detach().cpu().numpy())
-
-        # depth = depth * self.datamanager.train_dataparser_outputs.dataparser_scale
-        depth = gsplat_output['depth'].squeeze(2) / self.datamanager.train_dataparser_outputs.dataparser_scale
-
+        if 'depth' in gsplat_output.keys():
+            plt.imsave('rendered_depth.png', gsplat_output['depth'].squeeze(2).detach().cpu().numpy())
+            depth = gsplat_output['depth'].squeeze(2) / self.datamanager.train_dataparser_outputs.dataparser_scale
+        else:
+            depth = depth / self.datamanager.train_dataparser_outputs.dataparser_scale
+        
         depth = depth * component
         while len(depth.shape) < 4:
             depth = depth.unsqueeze(0)

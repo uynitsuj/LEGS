@@ -49,7 +49,7 @@ import scipy.spatial.transform as transform
 import rclpy
 from rclpy.node import Node
 from lifelong_msgs.msg import ImagePose
-# from lifelong_msgs.msg import ImagePoses
+from lifelong_msgs.msg import ImagePoses
 from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
@@ -231,7 +231,7 @@ class Trainer:
         self.image_add_callback_queue = []
         self.add_to_clip_queue = []
         self.image_process_queue = []
-        self.query_diff_queue = []
+        self.query_diff_queue = deque()
         self.query_diff_size = 1
         self.query_diff_msg_queue = []
         self.query_diff_size = 1
@@ -273,7 +273,7 @@ class Trainer:
             print("Stage set to", self.pipeline.datamanager.train_dataset.stage[-1])
     
         self.query_diff_msg_queue = []
-        self.query_diff_queue = []
+        self.query_diff_queue = deque()
 
         # # keeping just in case...
         # if self.pipeline.lifelong_exp_loop.value > 0: # i.e., exp_loop = 2 means that youve already played loop 1 and 2.
@@ -597,7 +597,8 @@ class Trainer:
         return K, image, mask
 
 
-    def process_query_diff(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
+    def process_query_diff(self, msg:ImagePose, imgidx, clip_dict = None, dino_data = None):
+        print(f'>>> process_query_diff {imgidx}')
         self.diff_wait_counter -= 1
 
         rgb_heatmaps, rgb_heatmap_masks, clip_heatmaps, clip_heatmap_masks, gsplat_outputs_list = [], [], [], [], []
@@ -609,8 +610,8 @@ class Trainer:
         c2w= torch.matmul(torch.cat([H,row]),torch.cat([c2w,row]))[:3,:]
         c2w[:3,3] *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
 
-        image = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
-        depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
+        image = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
+        depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.       
         image, depth = image.to(self.device), depth.to(self.device)
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
@@ -648,15 +649,19 @@ class Trainer:
 
             x = torch.arange(0, scaled_width * clip_downscale_factor, clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
             y = torch.arange(0, scaled_height * clip_downscale_factor, clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
-            image_idx_tensor = torch.ones(scaled_height, scaled_width, 1) * 20
+            image_idx_tensor = torch.ones(scaled_height, scaled_width, 1) * imgidx
             positions = torch.cat((image_idx_tensor, y, x), dim=-1).view(-1, 3).to(int)
 
-            clip_ground_truth_image, clip_scale = self.pipeline.datamanager.clip_interpolator(positions, image_scale)
-            clip_heat_map, clip_cleaned_heatmap_mask, gsplat_outputs = self.pipeline.query_diff_clip(clip_ground_truth_image, pose, image_scale = image_scale, vis_verbose = self.pipeline.plot_verbose)
-            clip_heatmaps.append(clip_heat_map)
-            clip_heatmap_masks.append(clip_cleaned_heatmap_mask)
-            gsplat_outputs_list = gsplat_outputs_list[:-1]
-            gsplat_outputs_list.append(gsplat_outputs)
+            if self.pipeline.datamanager.clip_interpolator.data_dict[0].data is not None and imgidx < self.pipeline.datamanager.clip_interpolator.data_dict[0].data.shape[0]:
+                clip_ground_truth_image, clip_scale = self.pipeline.datamanager.clip_interpolator(positions, image_scale)
+                clip_heat_map, clip_cleaned_heatmap_mask, gsplat_outputs = self.pipeline.query_diff_clip(clip_ground_truth_image, pose, image_scale = image_scale, vis_verbose = self.pipeline.plot_verbose)
+                clip_heatmaps.append(clip_heat_map)
+                clip_heatmap_masks.append(clip_cleaned_heatmap_mask)
+                gsplat_outputs_list = gsplat_outputs_list[:-1]
+                gsplat_outputs_list.append(gsplat_outputs)
+            else:
+                print(f'>>> imgidx {imgidx} clip_out_queue {self.clip_out_queue.qsize()} clip_interpolator {self.pipeline.datamanager.clip_interpolator.data_dict[0].data.shape}')
+            
 
         # gaussian_means_ptcld = self.pipeline.model.means.detach().cpu().numpy()
         # colors = np.ones_like(gaussian_means_ptcld)
@@ -723,21 +728,21 @@ class Trainer:
             )
 
         print(">>> using clip (heatmap):", self.pipeline.use_clip)
-        if self.pipeline.use_clip:
+        if self.pipeline.use_clip and len(clip_heatmaps) == len(depths):
             clip_boxes, clip_points = self.pipeline.heatmaps2box(clip_heatmaps, clip_heatmap_masks, images, poses, depths, depths, gsplat_outputs_list)
             if clip_points != []:
                 self.clip_diff_pointcloud_queue.points.extend(clip_points.points)
-            print('queue:', self.clip_diff_pointcloud_queue, self.diff_wait_counter)
+                clip_points_tr = trimesh.PointCloud(np.asarray(clip_points.points))
+                clip_points_tr.visual.vertex_colors = np.array([[1, 0, 1]]).repeat(clip_points_tr.shape[0], axis=0)
+                self.viewer_state.viser_server.add_point_cloud(
+                    f'/clip_{self.diff_wait_counter}_cld',
+                    points=clip_points_tr.vertices * 10,
+                    colors=clip_points_tr.visual.vertex_colors[:, :3],
+                )
 
-            clip_points_tr = trimesh.PointCloud(np.asarray(clip_points.points))
-            clip_points_tr.visual.vertex_colors = np.array([[1, 0, 1]]).repeat(clip_points_tr.shape[0], axis=0)
-            self.viewer_state.viser_server.add_point_cloud(
-                f'/clip_{self.diff_wait_counter}_cld',
-                points=clip_points_tr.vertices * 10,
-                colors=clip_points_tr.visual.vertex_colors[:, :3],
-            )
+            print('queue:', self.clip_diff_pointcloud_queue, self.diff_wait_counter)            
 
-            if self.diff_wait_counter == 0:       
+            if self.diff_wait_counter >= 0:       
                 clustered_clip_points, _ = self.clip_diff_pointcloud_queue.remove_statistical_outlier(len(clip_points.points) // 10, 0.1)
                 intvector = np.asarray(clustered_clip_points.cluster_dbscan(eps=0.5, min_points=len(clustered_clip_points.points) // 100, print_progress=False))
                 if len(np.unique(intvector)) >= 1 and intvector[0] != -1:
@@ -785,7 +790,7 @@ class Trainer:
                     extents=obox.S.cpu().numpy() * 10
                 )
                 bbox_viser = self.viewer_state.viser_server.add_mesh_trimesh(
-                    f"/clip_bbox",
+                    f"/clip_bbox_{self.diff_wait_counter}",
                     bbox,
                     # scale=self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale,
                     wxyz=vtf.SO3.from_matrix(obox.R.cpu().numpy()).wxyz,
@@ -1185,7 +1190,7 @@ class Trainer:
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
                     if self.calculate_diff and self.begin_differencing:
-                        self.query_diff_queue.append(msg)
+                        self.query_diff_queue.append((msg, self.imgidx))
 
                     self.add_to_clip_queue.append(msg)
                     self.image_process_queue.append((msg, points, colors))
@@ -1194,18 +1199,19 @@ class Trainer:
                     if not self.done_scale_calc:
                         parser_scale_list.append(msg.pose)
                         
-                while len(self.image_process_queue) > 0 and not self.train_lerf:
+                while len(self.image_process_queue) > 0:
                     message, pts, clrs = self.image_process_queue.pop(0)
                     self.process_image(message, step, pts, clrs)
                 
                 if self.train_lerf and len(self.add_to_clip_queue) > 0:
                     self.add_img_callback(self.add_to_clip_queue.pop(0))
 
-                if self.train_lerf and not self.clip_out_queue.empty():
+                while self.train_lerf and not self.clip_out_queue.empty():
                     print("adding clip pyramid embeddings")
                     self.pipeline.add_to_clip(self.clip_out_queue.get(), step)
                     if len(self.image_process_queue) > 0:
-                        self.process_image(self.image_process_queue.pop(0), step)
+                        message, pts, clrs = self.image_process_queue.pop(0)
+                        self.process_image(message, step, pts, clrs)
 
                 if self.training_state == "paused":
                     time.sleep(0.01)
@@ -1267,9 +1273,10 @@ class Trainer:
                 
 
                 with self.train_lock:
-                    if self.begin_differencing:
-                        while len(self.query_diff_queue) > self.query_diff_size:
-                            self.process_query_diff(self.query_diff_queue.pop(0), step)
+                    if self.begin_differencing and len(self.query_diff_queue) > self.query_diff_size:
+                        msg, imgidx = self.query_diff_queue.popleft()
+                        print(f'>>> imgidx {imgidx}, train_dataset {len(self.pipeline.datamanager.train_dataset)}, clip_interpolator {self.pipeline.datamanager.clip_interpolator.data_dict[0].data.shape}, clip_out_queue {self.clip_out_queue.qsize()}')
+                        self.process_query_diff(msg, imgidx)
                     #######################################
                     # Normal training loop
                     #######################################

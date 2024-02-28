@@ -1496,7 +1496,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             scale_reg = torch.tensor(0.0).to(self.device)
         loss_dict["scale_reg"] = scale_reg
 
-        if self.training and 'clip' in outputs: 
+        if self.training and 'clip' in outputs and 'clip' in batch: 
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
                 outputs["clip"], batch["clip"].to(self.device).to(torch.float32), delta=1.25, reduction="none"
             )

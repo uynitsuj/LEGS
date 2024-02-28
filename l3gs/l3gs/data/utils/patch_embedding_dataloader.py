@@ -81,12 +81,7 @@ class PatchEmbeddingDataloader(FeatureDataloader):
 
         x_ind = torch.floor((img_points_x - (self.start_x)) / self.stride).long()
         y_ind = torch.floor((img_points_y - (self.start_y)) / self.stride).long()
-        # return self._interp_inds(img_ind, x_ind, y_ind, img_points_x, img_points_y)
-        try:
-            res = self._interp_inds(img_ind, x_ind, y_ind, img_points_x, img_points_y)
-        except:
-            import pdb; pdb.set_trace()
-        return res
+        return self._interp_inds(img_ind, x_ind, y_ind, img_points_x, img_points_y)
 
     def _interp_inds(self, img_ind, x_ind, y_ind, img_points_x, img_points_y):
         img_ind = img_ind.to(self.data.device)  # self.data is on cpu to save gpu memory, hence this line
