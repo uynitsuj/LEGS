@@ -46,6 +46,7 @@ from nerfstudio.models.splatfacto import SplatfactoModelConfig, SplatfactoModel
 from l3gs.fields.gaussian_lerf_field import GaussianLERFField
 from l3gs.encoders.image_encoder import BaseImageEncoderConfig, BaseImageEncoder
 from l3gs.field_components.gaussian_lerf_fieldheadnames import GaussianLERFFieldHeadNames
+from nerfstudio.viewer.viewer import VISER_NERFSTUDIO_SCALE_RATIO
 
 # from torchmetrics.image import StructuralSimilarityIndexMeasure
 from gsplat.rasterize import rasterize_gaussians
@@ -152,7 +153,7 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """if a gaussian is more than this percent of screen space, cull it"""
     split_screen_size: float = 0.05
     """if a gaussian is more than this percent of screen space, split it"""
-    stop_screen_size_at: int = 4000
+    stop_screen_size_at: int = 50000
     """stop culling/splitting at this step WRT screen size of gaussians"""
     random_init: bool = False
     """whether to initialize the positions uniformly randomly (not SFM points)"""
@@ -170,11 +171,21 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """maximum degree of spherical harmonics to use"""
     clip_loss_weight: float = 0.1
     """weight of clip loss"""
-    use_scale_regularization: bool = True
+    use_scale_regularization: bool = False
     """If enabled, a scale regularization introduced in PhysGauss (https://xpandora.github.io/PhysGaussian/) is used for reducing huge spikey gaussians."""
     max_gauss_ratio: float = 10.0
     """threshold of ratio of gaussian max to min scale before applying regularization
     loss from the PhysGaussian paper
+    """
+    rasterize_mode: Literal["classic", "antialiased"] = "classic"
+    """
+    Classic mode of rendering will use the EWA volume splatting with a [0.3, 0.3] screen space blurring kernel. This
+    approach is however not suitable to render tiny gaussians at higher or lower resolution than the captured, which
+    results "aliasing-like" artifacts. The antialiased mode overcomes this limitation by calculating compensation factors
+    and apply them to the opacities of gaussians to preserve the total integrated density of splats.
+
+    However, PLY exported with antialiased rasterize mode is not compatible with classic mode. Thus many web viewers that
+    were implemented for classic mode can not render antialiased mode PLY properly without modifications.
     """
 
 class LLGaussianSplattingModel(SplatfactoModel):
@@ -357,11 +368,13 @@ class LLGaussianSplattingModel(SplatfactoModel):
     def add_deprojected_means(self, deprojected, colors, optimizers: Optimizers, step):
         if len(deprojected) > 0:
             with torch.no_grad():
-
-                deprojected = torch.stack(deprojected, dim=0).to(self.device)
-                colors = torch.stack(colors, dim=0).to(self.device)
+                # import pdb; pdb.set_trace()
+                # deprojected = torch.stack(deprojected, dim=0).to(self.device)
+                # colors = torch.stack(colors, dim=0).to(self.device)
+                deprojected = deprojected[0]
+                colors = colors[0]
                 numpts = len(deprojected)
-                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1))/4.0
+                avg_dist = torch.ones_like(deprojected.mean(dim=-1).unsqueeze(-1)) * 0.02 #* 0.01
 
                 # if self.clrs == None:
                 #     self.clrs = torch.nn.Parameter(torch.cat([self.means.detach(), colors], dim=0))
@@ -417,10 +430,10 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 #         # import pdb; pdb.set_trace()
                 #         self.remove_from_all_optim(optimizers, deleted_mask)
             
-            ### Deproject Debug
+            ## Deproject Debug
             # means_freeze = self.means.data.clone().cpu()
             # colors_freeze = self.clrs.data.clone().cpu()
-            # self.viewer_control.viser_server.add_point_cloud("relevancy", means_freeze.numpy(force=True), colors_freeze.numpy(force=True), 0.1)
+            # self.viewer_control.viser_server.add_point_cloud("deprojected", means_freeze.numpy(force=True) * VISER_NERFSTUDIO_SCALE_RATIO, colors_freeze.numpy(force=True), 0.1)
             # import pdb; pdb.set_trace()
 
             colors = colors.detach()
@@ -442,8 +455,9 @@ class LLGaussianSplattingModel(SplatfactoModel):
         del optimizer.state[param]
 
         # Modify the state directly without deleting and reassigning.
-        param_state["exp_avg"] = param_state["exp_avg"][~deleted_mask]
-        param_state["exp_avg_sq"] = param_state["exp_avg_sq"][~deleted_mask]
+        if "exp_avg" in param_state:
+            param_state["exp_avg"] = param_state["exp_avg"][~deleted_mask]
+            param_state["exp_avg_sq"] = param_state["exp_avg_sq"][~deleted_mask]
 
         # Update the parameter in the optimizer's param group.
         del optimizer.param_groups[0]["params"][0]
@@ -463,21 +477,22 @@ class LLGaussianSplattingModel(SplatfactoModel):
         """adds the parameters to the optimizer"""
         param = optimizer.param_groups[0]["params"][0]
         param_state = optimizer.state[param]
-        repeat_dims = (n,) + tuple(1 for _ in range(param_state["exp_avg"].dim() - 1))
-        param_state["exp_avg"] = torch.cat(
-            [
-                param_state["exp_avg"],
-                torch.zeros_like(param_state["exp_avg"][dup_mask.squeeze()]).repeat(*repeat_dims),
-            ],
-            dim=0,
-        )
-        param_state["exp_avg_sq"] = torch.cat(
-            [
-                param_state["exp_avg_sq"],
-                torch.zeros_like(param_state["exp_avg_sq"][dup_mask.squeeze()]).repeat(*repeat_dims),
-            ],
-            dim=0,
-        )
+        if "exp_avg" in param_state:
+            repeat_dims = (n,) + tuple(1 for _ in range(param_state["exp_avg"].dim() - 1))
+            param_state["exp_avg"] = torch.cat(
+                [
+                    param_state["exp_avg"],
+                    torch.zeros_like(param_state["exp_avg"][dup_mask.squeeze()]).repeat(*repeat_dims),
+                ],
+                dim=0,
+            )
+            param_state["exp_avg_sq"] = torch.cat(
+                [
+                    param_state["exp_avg_sq"],
+                    torch.zeros_like(param_state["exp_avg_sq"][dup_mask.squeeze()]).repeat(*repeat_dims),
+                ],
+                dim=0,
+            )
         del optimizer.state[param]
         optimizer.state[new_params[0]] = param_state
         optimizer.param_groups[0]["params"] = new_params
@@ -842,12 +857,12 @@ class LLGaussianSplattingModel(SplatfactoModel):
         W, H = camera.width.item(), camera.height.item()
         self.last_size = (H, W)
         projmat = projection_matrix(0.001, 1000, fovx, fovy, device=self.device)
-        BLOCK_X, BLOCK_Y = 16, 16
-        tile_bounds = (
-            (W + BLOCK_X - 1) // BLOCK_X,
-            (H + BLOCK_Y - 1) // BLOCK_Y,
-            1,
-        )
+        # BLOCK_X, BLOCK_Y = 16, 16
+        # tile_bounds = (
+        #     (W + BLOCK_X - 1) // BLOCK_X,
+        #     (H + BLOCK_Y - 1) // BLOCK_Y,
+        #     1,
+        # )
 
         if crop_ids is not None:
             means_crop = self.means[crop_ids]
@@ -857,7 +872,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
             means_crop = self.means
             scales_crop = self.scales
             quats_crop = self.quats
-        xys, depths, radii, conics, num_tiles_hit, cov3d = project_gaussians(
+        BLOCK_WIDTH = 16
+        xys, depths, radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(
             means_crop,
             torch.exp(scales_crop),
             1,
@@ -870,7 +886,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             cy,
             H,
             W,
-            tile_bounds,
+            BLOCK_WIDTH,
         )
 
         # rescale the camera back to original dimensions
@@ -937,12 +953,12 @@ class LLGaussianSplattingModel(SplatfactoModel):
         W, H = int(camera.width.item()), int(camera.height.item())
         self.last_size = (H, W)
         projmat = projection_matrix(0.001, 1000, fovx, fovy, device=self.device)
-        BLOCK_X, BLOCK_Y = 16, 16
-        tile_bounds = (
-            int((W + BLOCK_X - 1) // BLOCK_X),
-            int((H + BLOCK_Y - 1) // BLOCK_Y),
-            1,
-        )
+        # BLOCK_X, BLOCK_Y = 16, 16
+        # tile_bounds = (
+        #     int((W + BLOCK_X - 1) // BLOCK_X),
+        #     int((H + BLOCK_Y - 1) // BLOCK_Y),
+        #     1,
+        # )
 
         if crop_ids is not None:
             opacities_crop = self.opacities[crop_ids]
@@ -960,8 +976,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
             quats_crop = self.quats
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
-        
-        self.xys, depths, self.radii, conics, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
+        BLOCK_WIDTH = 16
+        self.xys, depths, self.radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
             means_crop,
             torch.exp(scales_crop),
             1,
@@ -974,7 +990,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             cy,
             H,
             W,
-            tile_bounds,
+            BLOCK_WIDTH,
         )  # type: ignore
         if (self.radii).sum() == 0:
             return {"rgb": background.repeat(int(camera.height.item()), int(camera.width.item()), 1)}
@@ -995,6 +1011,15 @@ class LLGaussianSplattingModel(SplatfactoModel):
         # rescale the camera back to original dimensions
         camera.rescale_output_resolution(camera_downscale)
         assert (num_tiles_hit > 0).any()  # type: ignore
+
+        opacities = None
+        if self.config.rasterize_mode == "antialiased":
+            opacities = torch.sigmoid(opacities_crop) * comp[:, None]
+        elif self.config.rasterize_mode == "classic":
+            opacities = torch.sigmoid(opacities_crop)
+        else:
+            raise ValueError("Unknown rasterize_mode: %s", self.config.rasterize_mode)
+
         rgb, alpha = rasterize_gaussians(  # type: ignore            
             self.xys,
             depths,
@@ -1002,9 +1027,10 @@ class LLGaussianSplattingModel(SplatfactoModel):
             conics,
             num_tiles_hit,  # type: ignore
             rgbs,
-            torch.sigmoid(opacities_crop),
+            opacities,
             H,
             W,
+            BLOCK_WIDTH,
             background=background,
             return_alpha=True,
         )  # type: ignore
@@ -1015,58 +1041,53 @@ class LLGaussianSplattingModel(SplatfactoModel):
         outputs["accumulation"] = alpha
         
         depth_im = None
-        # if not self.training:
-        # print(num_tiles_hit)
-        # print(num_tiles_hit.max())
-        # import pdb; pdb.set_trace()
-        # print(torch.cumsum(num_tiles_hit, dim=0, dtype=torch.int32))
-        if self.steps_since_add > 1000:
-            depth_im = rasterize_gaussians(  # type: ignore
+        depth_im = rasterize_gaussians(  # type: ignore
                 self.xys,
                 depths,
                 self.radii,
                 conics,
                 num_tiles_hit,  # type: ignore
                 depths[:, None].repeat(1, 3),
-                torch.sigmoid(opacities_crop),
+                opacities,
                 H,
                 W,
+                BLOCK_WIDTH,
                 background=torch.ones(3, device=self.device),
             )[..., 0:1]  # type: ignore
-            depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
-            outputs["depth"] = depth_im
+        depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
+        outputs["depth"] = depth_im
 
-        with torch.no_grad():
-            depth_xys, depth_depths, depth_radii, depth_conics, depth_num_tiles_hit, depth_cov3d = project_gaussians(  # type: ignore
-                means_crop,
-                torch.exp(scales_crop),
-                1,
-                quats_crop / quats_crop.norm(dim=-1, keepdim=True),
-                viewmat.squeeze()[:3, :],
-                projmat.squeeze() @ viewmat.squeeze(),
-                camera.fx.item(),
-                camera.fy.item(),
-                cx//2,
-                cy//2,
-                H//2,
-                W//2,
-                tile_bounds,
-            ) 
-            depth_im = rasterize_gaussians(  # type: ignore
-                depth_xys,
-                depth_depths,
-                depth_radii,
-                depth_conics,
-                depth_num_tiles_hit,  # type: ignore
-                depths[:, None].repeat(1, 3),
-                torch.sigmoid(opacities_crop),
-                H//2,
-                W//2,
-                background=torch.ones(3, device=self.device),
-            )[..., 0:1]  # type: ignore
-            # alpha.resize_(H//2, W//2, 1)
-            # depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
-            outputs["depth_half"] = depth_im
+        # with torch.no_grad():
+        #     depth_xys, depth_depths, depth_radii, depth_conics, depth_num_tiles_hit, depth_cov3d = project_gaussians(  # type: ignore
+        #         means_crop,
+        #         torch.exp(scales_crop),
+        #         1,
+        #         quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+        #         viewmat.squeeze()[:3, :],
+        #         projmat.squeeze() @ viewmat.squeeze(),
+        #         camera.fx.item(),
+        #         camera.fy.item(),
+        #         cx//2,
+        #         cy//2,
+        #         H//2,
+        #         W//2,
+        #         BLOCK_WIDTH,
+        #     ) 
+        #     depth_im = rasterize_gaussians(  # type: ignore
+        #         depth_xys,
+        #         depth_depths,
+        #         depth_radii,
+        #         depth_conics,
+        #         depth_num_tiles_hit,  # type: ignore
+        #         depths[:, None].repeat(1, 3),
+        #         torch.sigmoid(opacities_crop),
+        #         H//2,
+        #         W//2,
+        #         background=torch.ones(3, device=self.device),
+        #     )[..., 0:1]  # type: ignore
+        #     # alpha.resize_(H//2, W//2, 1)
+        #     # depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
+        #     outputs["depth_half"] = depth_im
         
         if self.datamanager.use_clip:
             if self.step - self.datamanager.lerf_step > 500:
@@ -1234,44 +1255,44 @@ class LLGaussianSplattingModel(SplatfactoModel):
             pred_img = pred_img * mask
 
         Ll1 = torch.abs(gt_img - pred_img).mean()
-        # simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
-        loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 # + self.config.ssim_lambda * simloss
+        simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
+        loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss
 
-        if "depth_half" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
+        # if "depth_half" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
             
-            assert outputs["depth_half"].shape == batch["depth"].shape
-            gt_depth = batch["depth"].permute(2, 0, 1)
-            pred_depth = outputs["depth_half"].permute(2, 0, 1)
-            mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
-            mask = mask.permute(2, 0, 1)
-            # import pdb; pdb.set_trace()
-            assert pred_depth.shape == gt_depth.shape == mask.shape
-            # import matplotlib.pyplot as plt
-            # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy())
-            # plt.savefig("depth_gt.png")
-            # plt.imshow(outputs["depth_half"].squeeze(-1).detach().cpu().numpy())
-            # plt.savefig("depth_pred.png")
-            # plt.imshow(mask.squeeze(0).cpu().numpy())
-            # plt.savefig("depth_mask.png")
-            # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
-            # plt.savefig("depth_gt_masked.png")
-            # plt.imshow(outputs["depth_half"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
-            # plt.savefig("depth_pred_masked.png")
-            # plt.imshow(outputs["depth"].squeeze(-1).detach().cpu().numpy())
-            # plt.savefig("depth_pred_full.png")
-            # import pdb; pdb.set_trace()
-            depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
-            loss_dict["depth_loss"] = depth_correlation_loss
-        elif "depth" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
-            assert outputs["depth"].shape == batch["depth"].shape
-            gt_depth = batch["depth"].permute(2, 0, 1)
-            pred_depth = outputs["depth"].permute(2, 0, 1)
-            mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
-            mask = mask.permute(2, 0, 1)
-            # import pdb; pdb.set_trace()
-            assert pred_depth.shape == gt_depth.shape == mask.shape
-            depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
-            loss_dict["depth_loss"] = depth_correlation_loss
+        #     assert outputs["depth_half"].shape == batch["depth"].shape
+        #     gt_depth = batch["depth"].permute(2, 0, 1)
+        #     pred_depth = outputs["depth_half"].permute(2, 0, 1)
+        #     mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
+        #     mask = mask.permute(2, 0, 1)
+        #     # import pdb; pdb.set_trace()
+        #     assert pred_depth.shape == gt_depth.shape == mask.shape
+        #     # import matplotlib.pyplot as plt
+        #     # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy())
+        #     # plt.savefig("depth_gt.png")
+        #     # plt.imshow(outputs["depth_half"].squeeze(-1).detach().cpu().numpy())
+        #     # plt.savefig("depth_pred.png")
+        #     # plt.imshow(mask.squeeze(0).cpu().numpy())
+        #     # plt.savefig("depth_mask.png")
+        #     # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
+        #     # plt.savefig("depth_gt_masked.png")
+        #     # plt.imshow(outputs["depth_half"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
+        #     # plt.savefig("depth_pred_masked.png")
+        #     # plt.imshow(outputs["depth"].squeeze(-1).detach().cpu().numpy())
+        #     # plt.savefig("depth_pred_full.png")
+        #     # import pdb; pdb.set_trace()
+        #     depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
+        #     loss_dict["depth_loss"] = depth_correlation_loss
+        # elif "depth" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
+        #     assert outputs["depth"].shape == batch["depth"].shape
+        #     gt_depth = batch["depth"].permute(2, 0, 1)
+        #     pred_depth = outputs["depth"].permute(2, 0, 1)
+        #     mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
+        #     mask = mask.permute(2, 0, 1)
+        #     # import pdb; pdb.set_trace()
+        #     assert pred_depth.shape == gt_depth.shape == mask.shape
+        #     depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
+        #     loss_dict["depth_loss"] = depth_correlation_loss
 
         if self.config.use_scale_regularization and self.step % 10 == 0:
             scale_exp = torch.exp(self.scales)

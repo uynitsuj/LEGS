@@ -4,6 +4,7 @@ import torch
 
 from nerfstudio.data.dataparsers.base_dataparser import DataparserOutputs
 from nerfstudio.data.datasets.base_dataset import InputDataset
+from nerfstudio.process_data.colmap_utils import qvec2rotmat
 
 
 class L3GSDataset(InputDataset):
@@ -60,6 +61,8 @@ class L3GSDataset(InputDataset):
 
         self.cur_size = 0
 
+        self.BA_poses = None
+
     def __len__(self):
         return self.cur_size
 
@@ -92,7 +95,43 @@ class L3GSDataset(InputDataset):
         self.image_tensor[self.cur_size,...] = img
         self.depth_tensor[self.cur_size,...] = depth.unsqueeze(-1)
         self.cur_size += 1
-        
+
+    def add_BA_poses(self, poses):
+        if self.BA_poses is None:
+            print("First Bundle Adjustment Poses Added")
+        self.BA_poses = poses
+        BA_deltas = []
+        # import pdb; pdb.set_trace()
+        for idx in range(self.cur_size):
+
+            new_posi = torch.tensor([self.BA_poses[idx, 0], self.BA_poses[idx, 1], self.BA_poses[idx, 2]])
+            new_quat = torch.tensor([self.BA_poses[idx, 6], self.BA_poses[idx, 3], self.BA_poses[idx, 4], self.BA_poses[idx, 5]])
+            new_R = torch.tensor(qvec2rotmat(new_quat))
+            
+            formatted_R = torch.zeros((3, 3), dtype=torch.float32, device=new_R.device)
+            formatted_R[:, 0] = new_R[:, 0]
+            formatted_R[:, 1] = -new_R[:, 1]
+            formatted_R[:, 2] = -new_R[:, 2]
+
+            new = torch.cat([formatted_R, new_posi.unsqueeze(0).transpose(1, 0)], dim=1).to(self.device)
+
+            H = self._dataparser_outputs.dataparser_transform
+            row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=new.device)
+            c2w= torch.matmul(torch.cat([H,row]),torch.cat([new,row]))[:3,:]
+            c2w[:3,3] *= self._dataparser_outputs.dataparser_scale
+
+            # find transform from self.cameras.camera_to_worlds[idx, ...] to c2w
+            old_c2w = self.cameras.camera_to_worlds[idx, ...]
+            old_c2w = torch.tensor(old_c2w, dtype=torch.float32, device=self.device)
+            delta_xyz = c2w[:3, 3] - old_c2w[:3, 3]
+            delta_so3 = torch.matmul(old_c2w[:3, :3].inverse(), c2w[:3, :3])
+            delta_se3 = torch.eye(4, dtype=torch.float32, device=self.device)
+            delta_se3[:3, :3] = delta_so3
+            delta_se3[:3, 3] = delta_xyz
+            BA_deltas.append(delta_se3)
+            self.cameras.camera_to_worlds[idx, ...] = c2w
+        return BA_deltas
+    
     def __getitem__(self, idx: int):
         """
         This returns the data as a dictionary which is not actually how it is

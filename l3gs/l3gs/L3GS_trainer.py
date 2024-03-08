@@ -164,7 +164,7 @@ class TricamTrainerNode(Node):
         print("Appending imagepose to queue",flush=True)
         # self.trainer_.image_add_callback_queue.append(msg)
 
-        self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors))
+        self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, msg.prev_poses, msg.got_prev_poses))
 
         # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None))
 
@@ -241,6 +241,8 @@ class Trainer:
         self.box_viser_handles = []
         self.deprojected_queue = deque()
         self.colors_queue = deque()
+        self.points_queue = deque()
+        self.start_idx = 0
         self.train_lerf = False
         self.diff_wait_counter = 0
         self.multicam = True
@@ -735,7 +737,7 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    def deproject_droidslam_point_cloud(self, colors, points, frame1, dataset_cam, num_samples = 500, device = 'cuda:0'):
+    def deproject_droidslam_point_cloud(self, colors, points, frame1, num_samples = 500, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -777,6 +779,9 @@ class Trainer:
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
         cx = torch.tensor([msg.cx])
+        # print('fx', fx, 'fy', fy, 'cx', cx, 'cy', cy)
+        # import pdb; pdb.set_trace()
+
         # cx = torch.tensor([msg.cy])
         # cy = torch.tensor([msg.cx])
         # width = torch.tensor([msg.w])
@@ -833,10 +838,20 @@ class Trainer:
         R = R @ vtf.SO3.from_x_radians(np.pi)
         cidx = self.viewer_state._pick_drawn_image_idxs(idx+1)[-1]
         # scale_factor = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+        # camera_handle = self.viser_server.add_camera_frustum(
+        #         name=f"/cameras/camera_{idx:05d}",
+        #         fov=float(2 * np.arctan(camera.cx / camera.fx[0])),
+        #         scale=self.config.camera_frustum_scale,
+        #         aspect=float(camera.cx[0] / camera.cy[0]),
+        #         image=image_uint8,
+        #         wxyz=R.wxyz,
+        #         position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
+        #     )
+        # scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale=0.5,
+                    scale= 0.5,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
@@ -883,10 +898,12 @@ class Trainer:
             #     self.colors_queue.extend(colors)
             # DROIDSLAM
             if self.done_scale_calc and points:
+                # import pdb; pdb.set_trace()
+                # self.points_queue.extend(points)
                 frame1 = self.pipeline.datamanager.train_dataset.cameras[0]
-                deprojected, colors = self.deproject_droidslam_point_cloud(clrs, points, frame1, dataset_cam)
-                self.deprojected_queue.extend(deprojected)
-                self.colors_queue.extend(colors)
+                deprojected, colors = self.deproject_droidslam_point_cloud(clrs, points, frame1)
+                self.deprojected_queue.append(deprojected)
+                self.colors_queue.append(colors)
             # else:
             #     project_interval = 3
             #     rs_interval = 3
@@ -906,9 +923,31 @@ class Trainer:
             #         self.deprojected_queue.extend(deprojected)
             #         self.colors_queue.extend(colors)
 
-
     # def add_to_clip(clip_dict = None):
     #     self.pipeline.add_to_clip
+
+    def update_poses(self, BA_deltas, start_idx):
+        idxs = list(self.viewer_state.camera_handles.keys())
+        missed_depro = len(BA_deltas) - len(self.deprojected_queue)
+        for idx in range(start_idx, len(self.pipeline.datamanager.train_dataset)):
+
+            C = self.pipeline.datamanager.train_dataset.cameras
+
+            c2w = C.camera_to_worlds[idx,...]
+
+            R = vtf.SO3.from_matrix(c2w[:3, :3])
+            R = R @ vtf.SO3.from_x_radians(np.pi)
+            self.viewer_state.camera_handles[idxs[idx]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
+            self.viewer_state.camera_handles[idxs[idx]].wxyz = R.wxyz
+
+            if idx > missed_depro:
+                if start_idx == 0:
+                    points_homog = torch.cat([self.deprojected_queue[idx-missed_depro-1], torch.ones((self.deprojected_queue[idx-missed_depro-1].shape[0], 1), device='cuda:0')], dim=1)
+                    self.deprojected_queue[idx-missed_depro-1] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
+                else:
+                    points_homog = torch.cat([self.deprojected_queue[idx-start_idx], torch.ones((self.deprojected_queue[idx-start_idx].shape[0], 1), device='cuda:0')], dim=1)
+                    self.deprojected_queue[idx-start_idx] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
+        self.start_idx = len(self.pipeline.datamanager.train_dataset)
 
     def setup(self, test_mode: Literal["test", "val", "inference"] = "val") -> None:
         """Setup the Trainer by calling other setup functions.
@@ -926,22 +965,8 @@ class Trainer:
             local_rank=self.local_rank,
             grad_scaler=self.grad_scaler,
             clip_out_queue=self.clip_out_queue,
-            # dino_out_queue=self.dino_out_queue,
         )
 
-        # self.pipeline.lifelong_exp_aname = ViewerText(name="Exp name", default_value="")
-        # self.pipeline.lifelong_exp_aname = ViewerDropdown(
-        #     name="Exp name", 
-        #     options=[""] + sorted(os.listdir('/home/yujustin/Desktop/bags')), 
-        #     default_value="")
-        # self.pipeline.lifelong_exp_loop = ViewerNumber(name="Exp loop", default_value=0, disabled=True)
-        # self.pipeline.droidslam_start = ViewerButton(name="Start Droidslam", cb_hook=self.handle_start_droidslam)
-
-        # self.pipeline.lifelong_exp_start = ViewerButton(name="Start Exp", cb_hook=self.handle_start_bag, disabled=True)
-        # self.pipeline.stage_button = ViewerButton(name="Update Stage", cb_hook=self.handle_stage_btn, disabled=True)
-        # self.pipeline.calc_metric = ViewerButton(name="Calculate Metric", cb_hook=self.handle_calc_metric)
-        # self.pipeline.percentage_masked = ViewerButton(name="Percent Masked", cb_hook=self.handle_percentage_masked)
-        # self.pipeline.plot_verbose = ViewerCheckbox(name="Plot Verbose", default_value=True)
         self.pipeline.train_lerf = ViewerButton(name="Train LERF", cb_hook=self.handle_train_lerf)
         self.pipeline.start_diff = ViewerButton(name="Start Differencing", cb_hook=self.handle_diff)
 
@@ -1016,13 +1041,7 @@ class Trainer:
         """
         optimizer_config = self.config.optimizers.copy()
         param_groups = self.pipeline.get_param_groups()
-        # camera_optimizer_config = self.config.pipeline.datamanager.camera_optimizer
-        # if camera_optimizer_config is not None and camera_optimizer_config.mode != "off":
-        #     assert camera_optimizer_config.param_group not in optimizer_config
-        #     optimizer_config[camera_optimizer_config.param_group] = {
-        #         "optimizer": camera_optimizer_config.optimizer,
-        #         "scheduler": None,
-        #     }
+
         return Optimizers(optimizer_config, param_groups)
 
     # @profile
@@ -1036,6 +1055,7 @@ class Trainer:
             self.pipeline.datamanager.train_dataparser_outputs.save_dataparser_transform(
                 self.base_dir / "dataparser_transforms.json"
             )
+        BA_flag = False
 
         rclpy.init(args=None)
         if self.multicam:
@@ -1048,17 +1068,18 @@ class Trainer:
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
             step = 0
-            num_add = 50
+            num_add = 1
             self.imgidx = 0
             
             while True:
                 rclpy.spin_once(trainer_node,timeout_sec=0.00)
 
                 has_image_add = len(self.image_add_callback_queue) > 0
+                pp_sig = False
+                prev_poses = None
                 if has_image_add:
                     #Not sure if we want to loop till the queue is empty or not
-                    msg, points, colors = self.image_add_callback_queue.pop(0)
-                    # import pdb; pdb.set_trace()
+                    msg, points, colors, prev_poses, pp_sig = self.image_add_callback_queue.pop(0)
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
@@ -1086,6 +1107,13 @@ class Trainer:
                     print("adding clip pyramid embeddings")
                     self.pipeline.add_to_clip(self.clip_out_queue.get(), step)
 
+                if pp_sig:
+                        BA_flag = True
+                        new_poses = torch.Tensor(prev_poses).reshape(-1,7)
+                        BA_deltas = self.pipeline.datamanager.train_dataset.add_BA_poses(new_poses)
+                        self.update_poses(BA_deltas, self.start_idx)
+                        # import pdb; pdb.set_trace()
+
                 if self.training_state == "paused":
                     time.sleep(0.01)
                     continue
@@ -1112,7 +1140,7 @@ class Trainer:
                     )
                     # scale_factor = 1.0
                     # scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
-                    scale_factor = 5.593
+                    scale_factor = 1.0
                     print(scale_factor)
                     self.pipeline.datamanager.train_dataset._dataparser_outputs.dataparser_transform = transform_matrix
                     self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform = transform_matrix
@@ -1173,14 +1201,9 @@ class Trainer:
                             if group == 'lerf':
                                 continue
                             expain.append("exp_avg" in self.optimizers.optimizers[group].state[self.optimizers.optimizers[group].param_groups[0]["params"][0]].keys())
-                        if all(expain):
-                            # print("Adding deprojected gaussians")
+                        if all(expain) and BA_flag:
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
-                        
-                        # print(len(self.deprojected_queue))
-
-                        # print(f"Train + deprojecting took {time.time()-start} seconds")
 
                         # training callbacks after the training iteration
                         for callback in self.callbacks:
