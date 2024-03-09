@@ -449,7 +449,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         #Pick a random scale from min to max and then the clip features at that scale
         if self.use_clip:
-            if step - self.lerf_step > 500:
+            if step - self.lerf_step > 500 and len(self.clip_interpolator.data_dict[0].data) > image_idx:
                 # print("Training CLIP")
                 H, W = data["image"].shape[:2]
                 scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
@@ -459,7 +459,6 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                 scaled_height = H//self.config.clip_downscale_factor
                 scaled_width = W//self.config.clip_downscale_factor
                 self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
-                # self.random_pixels = torch.arange(scaled_height*scaled_width) ## uncomment for full image, no sampling
 
                 x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
                 y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
@@ -475,6 +474,8 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                 positions = positions[self.random_pixels]
                 # import pdb; pdb.set_trace()
                 with torch.no_grad():
+                    # import pdb; pdb.set_trace()
+                    # len(self.clip_interpolator.data_dict[0].data)
                     data["clip"], data["clip_scale"] = self.clip_interpolator(positions, scale) # [0], self.clip_interpolator(positions, scale)[1]
                     # data["clip"], data["clip_scale"] = self.clip_interpolator(positions)[0], self.clip_interpolator(positions)[1]
                     # data["dino"] = self.dino_dataloader(positions)
@@ -533,14 +534,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         5. make sure we set the mask for the image we just added         (We should handle masks in the pipeline because adding one image requires adding a bunch of masks)
         """
         # ----------------- Handling the lerf features ----------------
-        # pass
         self.clip_interpolator.add_images(img.unsqueeze(0))
-        # self.dino_dataloader.add_images(img.unsqueeze(0))
-
-
-        # ----------------- Handling the IMAGE ----------------
-        # self.train_dataset.add_image(img,cam)
-        # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
 
     # @profile
     def process_image(self, img:torch.Tensor, depth:torch.Tensor, cam: Cameras, clip, dino):
@@ -552,26 +546,6 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         
         data = self.train_dataset[len(self.train_dataset)-1]
         self.cached_train.append(data)
-        # print(self.train_dataset.get_data)
-        # print(self.train_dataset[-1])
-        # self.train_ray_generator.cameras = self.train_dataset.cameras.to(self.device)
-        # self.clip_interpolator.add_images(img.unsqueeze(0))
-        # dino = dino.to(self.device)
-        # if clip is not None: 
-        #     self.use_clip = True
-        #     for i, tr in enumerate(self.clip_interpolator.tile_sizes):
-        #         clip[i] = clip[i].to(self.device)
-        #         if self.clip_interpolator.data_dict[i].data is not None:
-        #             self.clip_interpolator.data_dict[i].data = torch.cat([self.clip_interpolator.data_dict[i].data, clip[i]])
-        #         else:
-        #             self.clip_interpolator.data_dict[i].data = clip[i]
-            
-        # else:
-        #     self.use_clip = False
-        # if self.dino_dataloader.data is None:
-        #     self.dino_dataloader.data = dino
-        # else:
-        #     self.dino_dataloader.data = torch.cat([self.dino_dataloader.data, dino], dim=0)
 
     def add_to_clip(self, clip, step):
         if clip is not None: 
