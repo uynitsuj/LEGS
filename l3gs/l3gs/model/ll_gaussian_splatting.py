@@ -205,6 +205,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         super().__init__(*args, **kwargs)
         self.deprojected_new = []
         self.colors_new = []
+        self.postBA = False
 
     def populate_modules(self):
         if self.seed_pts is not None and not self.config.random_init:
@@ -444,6 +445,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             self.deprojected_new.clear()
             self.colors_new.clear()
             self.steps_since_add = 0
+            self.postBA = True
 
     def remove_from_optim(self, optimizer, deleted_mask, new_params):
         """removes the deleted_mask from the optimizer provided"""
@@ -632,10 +634,10 @@ class LLGaussianSplattingModel(SplatfactoModel):
                     )
                 )
                 
-                if self.steps_since_add >= 5500:
+                if self.steps_since_add >= 5500 and self.postBA:
                     deleted_mask = self.cull_gaussians(splits_mask)
             elif self.step >= self.config.stop_split_at and self.config.continue_cull_post_densification:
-                if self.steps_since_add >= 5500:
+                if self.steps_since_add >= 5500 and self.postBA:
                     deleted_mask = self.cull_gaussians()
             else:
                 # if we donot allow culling post refinement, no more gaussians will be pruned.
@@ -1090,8 +1092,11 @@ class LLGaussianSplattingModel(SplatfactoModel):
         #     outputs["depth_half"] = depth_im
         
         if self.datamanager.use_clip:
+            # import pdb; pdb.set_trace()
             if self.step - self.datamanager.lerf_step > 500:
-                    
+                if camera.metadata is not None:
+                    if "clip_downscale_factor" not in camera.metadata:
+                        return outputs
                 ########################
                 # CLIP Relevancy Field #
                 ########################
@@ -1120,6 +1125,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                         torch.sigmoid(opacities_crop.detach().clone()),
                         clip_H,
                         clip_W,
+                        BLOCK_WIDTH,
                         torch.zeros(clip_hash_encoding.shape[1], device=self.device),
                     )
 
@@ -1308,7 +1314,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             scale_reg = torch.tensor(0.0).to(self.device)
         loss_dict["scale_reg"] = scale_reg
 
-        if self.training and 'clip' in outputs: 
+        if self.training and 'clip' in outputs and 'clip' in batch: 
             unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
                 outputs["clip"], batch["clip"].to(self.device).to(torch.float32), delta=1.25, reduction="none"
             )
