@@ -95,6 +95,15 @@ class L3GSDataset(InputDataset):
         self.image_tensor[self.cur_size,...] = img
         self.depth_tensor[self.cur_size,...] = depth.unsqueeze(-1)
         self.cur_size += 1
+        # from torch.nn import functional as F
+        # torch_img = img.permute(2, 0, 1).unsqueeze(0).float()
+        # img = F.interpolate(torch_img,(self.image_height, self.image_width),mode='bilinear').squeeze(0).squeeze(0)
+        # img = img.permute(1, 2, 0)
+        # self.image_tensor[self.cur_size,...] = img
+        # torch_depth = depth.unsqueeze(0).unsqueeze(0).float()
+        # depth = F.interpolate(torch_depth,(self.depth_height,self.depth_width),mode='bilinear').squeeze(0).squeeze(0)
+        # self.depth_tensor[self.cur_size,...] = depth.unsqueeze(-1)
+        # self.cur_size += 1
 
     def add_BA_poses(self, poses):
         if self.BA_poses is None:
@@ -124,7 +133,7 @@ class L3GSDataset(InputDataset):
             old_c2w = self.cameras.camera_to_worlds[idx, ...]
             old_c2w = torch.tensor(old_c2w, dtype=torch.float32, device=self.device)
             delta_xyz = c2w[:3, 3] - old_c2w[:3, 3]
-            delta_so3 = torch.matmul(old_c2w[:3, :3].inverse(), c2w[:3, :3])
+            delta_so3 = torch.matmul(old_c2w[:3, :3].transpose(1, 0), c2w[:3, :3])
             delta_se3 = torch.eye(4, dtype=torch.float32, device=self.device)
             delta_se3[:3, :3] = delta_so3
             delta_se3[:3, 3] = delta_xyz

@@ -163,8 +163,10 @@ class TricamTrainerNode(Node):
     def add_img_callback(self,msg):
         print("Appending imagepose to queue",flush=True)
         # self.trainer_.image_add_callback_queue.append(msg)
-
-        self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, msg.prev_poses, msg.got_prev_poses))
+        if msg.got_prev_poses is False:
+            self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses))
+        else:
+            self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses))
 
         # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None))
 
@@ -1083,18 +1085,19 @@ class Trainer:
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
-                    if self.calculate_diff:
-                        # TODO: Kishore and Justin
-                        # raise NotImplementedError
-                        self.query_diff_queue.append(msg)
+                    if pp_sig is False:
+                        if self.calculate_diff:
+                            # TODO: Kishore and Justin
+                            # raise NotImplementedError
+                            self.query_diff_queue.append(msg)
 
-                    else:
-                        self.add_to_clip_queue.append(msg)
-                        self.image_process_queue.append((msg, points, colors))
-                        self.imgidx += 1
+                        else:
+                            self.add_to_clip_queue.append(msg)
+                            self.image_process_queue.append((msg, points, colors))
+                            self.imgidx += 1
 
-                    if not self.done_scale_calc:
-                        parser_scale_list.append(msg.pose)
+                        if not self.done_scale_calc:
+                            parser_scale_list.append(msg.pose)
                         
                 while len(self.image_process_queue) > 0:
                     message, pts, clrs = self.image_process_queue.pop(0)
@@ -1112,7 +1115,6 @@ class Trainer:
                         new_poses = torch.Tensor(prev_poses).reshape(-1,7)
                         BA_deltas = self.pipeline.datamanager.train_dataset.add_BA_poses(new_poses)
                         self.update_poses(BA_deltas, self.start_idx)
-                        # import pdb; pdb.set_trace()
 
                 if self.training_state == "paused":
                     time.sleep(0.01)

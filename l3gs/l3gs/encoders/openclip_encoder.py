@@ -87,12 +87,13 @@ class OpenCLIPNetwork(BaseImageEncoder):
         self.positives = text_list
         with torch.no_grad():
             tok_phrases = torch.cat([self.tokenizer(phrase) for phrase in self.positives]).to(self.config.device)
+            # import pdb; pdb.set_trace()
             self.pos_embeds = self.model.encode_text(tok_phrases)
         self.pos_embeds /= self.pos_embeds.norm(dim=-1, keepdim=True)
         self.pos_embeds = self.pos_embeds.to(self.config.device)
 
     def get_relevancy(self, embed: torch.Tensor, positive_id: int) -> torch.Tensor:
-        phrases_embeds = torch.cat([self.pos_embeds, self.neg_embeds], dim=0)
+        phrases_embeds = torch.cat([self.pos_embeds, self.neg_embeds], dim=0).to(self.config.device)
         p = phrases_embeds.to(embed.dtype)  # phrases x 512
         embed = embed.to(p.device)
         output = torch.mm(embed, p.T)  # rays x phrases
