@@ -634,10 +634,10 @@ class LLGaussianSplattingModel(SplatfactoModel):
                     )
                 )
                 
-                if self.steps_since_add >= 5500 and self.postBA:
+                if self.steps_since_add >= 5500 and self.postBA and self.steps_since_add < 10000:
                     deleted_mask = self.cull_gaussians(splits_mask)
             elif self.step >= self.config.stop_split_at and self.config.continue_cull_post_densification:
-                if self.steps_since_add >= 5500 and self.postBA:
+                if self.steps_since_add >= 5500 and self.postBA and self.steps_since_add < 10000:
                     deleted_mask = self.cull_gaussians()
             else:
                 # if we donot allow culling post refinement, no more gaussians will be pruned.
@@ -1406,10 +1406,10 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
             # Do K nearest neighbors for each point and then avg the clip hash for each point based on the KNN
             # import pdb; pdb.set_trace()
-            means_freeze = self.means.data.clone().cpu()
+            means_freeze = self.means.data.clone()
             distances, indicies = self.k_nearest_sklearn(means_freeze, 3, True)
             distances = torch.from_numpy(distances).to(self.device)
-            indicies = torch.from_numpy(indicies).to(self.device).view(-1)
+            indicies = torch.from_numpy(indicies).view(-1)
             weights = torch.sigmoid(self.opacities[indicies].view(-1, 4))
             weights = torch.nn.Softmax(dim=-1)(weights)
             points = means_freeze[indicies]
@@ -1534,6 +1534,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         scales_list = torch.linspace(0.0, 1.5, 30).to(self.device)
         # scales_list = [0.1]
         all_probs = []
+        BLOCK_WIDTH = 16
 
         with torch.no_grad():
             clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
@@ -1554,6 +1555,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                             opacities,
                             h,
                             w,
+                            BLOCK_WIDTH,
                             # torch.zeros(self.image_encoder.embedding_dim, device=self.device),
                             torch.zeros(clip_hash_encoding.shape[1], device=self.device),
                         )
