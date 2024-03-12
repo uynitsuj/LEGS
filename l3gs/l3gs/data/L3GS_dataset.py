@@ -62,6 +62,14 @@ class L3GSDataset(InputDataset):
         self.cur_size = 0
 
         self.BA_poses = None
+        self.cam_0_to_1 = torch.tensor([[0.0, 0.0, -1.0, 0.103395],
+                                        [0.0, 1.0, 0.0, -0.03937],
+                                        [1.0, 0.0, 0.0, 0.050404],
+                                        [0.0, 0.0, 0.0, 1.0]]) # ZED_L to Realsense
+        self.cam_1_to_2 = torch.tensor([[0.0, 0.0, -1.0, 0.027404],
+                                        [0.0, 1.0, 0.0, 0.01016],
+                                        [1.0, 0.0, 0.0, -0.016605],
+                                        [0.0, 0.0, 0.0, 1.0]]) # Realsense to ZED_R
 
     def __len__(self):
         return self.cur_size
@@ -110,8 +118,9 @@ class L3GSDataset(InputDataset):
             print("First Bundle Adjustment Poses Added")
         self.BA_poses = poses
         BA_deltas = []
+        cam_factor = self.cur_size // poses.shape[0]
         # import pdb; pdb.set_trace()
-        for idx in range(self.cur_size):
+        for idx in range(poses.shape[0]):
 
             new_posi = torch.tensor([self.BA_poses[idx, 0], self.BA_poses[idx, 1], self.BA_poses[idx, 2]])
             new_quat = torch.tensor([self.BA_poses[idx, 6], self.BA_poses[idx, 3], self.BA_poses[idx, 4], self.BA_poses[idx, 5]])
@@ -130,7 +139,7 @@ class L3GSDataset(InputDataset):
             c2w[:3,3] *= self._dataparser_outputs.dataparser_scale
 
             # find transform from self.cameras.camera_to_worlds[idx, ...] to c2w
-            old_c2w = self.cameras.camera_to_worlds[idx, ...]
+            old_c2w = self.cameras.camera_to_worlds[idx * cam_factor, ...]
             old_c2w = torch.tensor(old_c2w, dtype=torch.float32, device=self.device)
             delta_xyz = c2w[:3, 3] - old_c2w[:3, 3]
             delta_so3 = torch.matmul(old_c2w[:3, :3].transpose(1, 0), c2w[:3, :3])
@@ -138,7 +147,11 @@ class L3GSDataset(InputDataset):
             delta_se3[:3, :3] = delta_so3
             delta_se3[:3, 3] = delta_xyz
             BA_deltas.append(delta_se3)
-            self.cameras.camera_to_worlds[idx, ...] = c2w
+            self.cameras.camera_to_worlds[idx * cam_factor, ...] = c2w
+
+            if cam_factor == 2:
+                self.cameras.camera_to_worlds[idx * cam_factor + 1, ...] = torch.matmul(torch.cat([c2w, row]), self.cam_0_to_1)[:3,:]
+
         return BA_deltas
     
     def __getitem__(self, idx: int):

@@ -165,10 +165,11 @@ class TricamTrainerNode(Node):
         # self.trainer_.image_add_callback_queue.append(msg)
         if msg.got_prev_poses is False:
             self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses, 0))
+            self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
         else:
             self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses, 0))
 
-        self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
+        
 
         # self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
 
@@ -771,24 +772,19 @@ class Trainer:
         This function actually adds things to the dataset
         '''
         camera_to_worlds = None
+        cam_0_to_1 = self.pipeline.datamanager.train_dataset.cam_0_to_1 # ZED_L to Realsense
+        cam_1_to_2 = self.pipeline.datamanager.train_dataset.cam_1_to_2 # Realsense to ZED_R
+        
         if camlr == 0:
             camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
         elif camlr == 1:
             camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
-            import pdb; pdb.set_trace()
-            cam_0_to_1 = torch.tensor([[0.0, 0.0, 1.0, 0.0],
-                                        [1.0, 0.0, 0.0, 0.0],
-                                        [0.0, 1.0, 0.0, 0.0],
-                                        [0.0, 0.0, 0.0, 1.0]])
-            
+            row = torch.tensor([[0,0,0,1]],dtype=torch.float32)
+            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), cam_0_to_1)[:3,:]
         elif camlr == 2:
             camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
-            import pdb; pdb.set_trace()
-            cam_0_to_2 = torch.tensor([[0.0, 0.0, 1.0, 0.0],
-                                        [1.0, 0.0, 0.0, 0.0],
-                                        [0.0, 1.0, 0.0, 0.0],
-                                        [0.0, 0.0, 0.0, 1.0]])
-
+            row = torch.tensor([[0,0,0,1]],dtype=torch.float32)
+            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), torch.matmul(cam_0_to_1, cam_1_to_2))[:3,:]
         
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
@@ -903,24 +899,33 @@ class Trainer:
     def update_poses(self, BA_deltas, start_idx):
         idxs = list(self.viewer_state.camera_handles.keys())
         missed_depro = len(BA_deltas) - len(self.deprojected_queue)
-        for idx in range(start_idx, len(self.pipeline.datamanager.train_dataset)):
+        cam_factor = len(self.pipeline.datamanager.train_dataset) // len(BA_deltas)
+        # import pdb; pdb.set_trace()
+        for idx in range(start_idx, len(BA_deltas)):
 
             C = self.pipeline.datamanager.train_dataset.cameras
 
-            c2w = C.camera_to_worlds[idx,...]
+            c2w = C.camera_to_worlds[idx * cam_factor,...]
 
             R = vtf.SO3.from_matrix(c2w[:3, :3])
             R = R @ vtf.SO3.from_x_radians(np.pi)
-            self.viewer_state.camera_handles[idxs[idx]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
-            self.viewer_state.camera_handles[idxs[idx]].wxyz = R.wxyz
+            self.viewer_state.camera_handles[idxs[idx * cam_factor]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
+            self.viewer_state.camera_handles[idxs[idx * cam_factor]].wxyz = R.wxyz
+
+            for i in range(1, cam_factor):
+                c2w = C.camera_to_worlds[idx * cam_factor + i, ...]
+                R = vtf.SO3.from_matrix(c2w[:3, :3])
+                R = R @ vtf.SO3.from_x_radians(np.pi)
+                self.viewer_state.camera_handles[idxs[idx * cam_factor + i]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
+                self.viewer_state.camera_handles[idxs[idx * cam_factor + i]].wxyz = R.wxyz
 
             if idx > missed_depro:
                 if start_idx == 0:
                     points_homog = torch.cat([self.deprojected_queue[idx-missed_depro-1], torch.ones((self.deprojected_queue[idx-missed_depro-1].shape[0], 1), device='cuda:0')], dim=1)
                     self.deprojected_queue[idx-missed_depro-1] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
-                else:
-                    points_homog = torch.cat([self.deprojected_queue[idx-start_idx], torch.ones((self.deprojected_queue[idx-start_idx].shape[0], 1), device='cuda:0')], dim=1)
-                    self.deprojected_queue[idx-start_idx] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
+                # else:
+                #     points_homog = torch.cat([self.deprojected_queue[idx-start_idx], torch.ones((self.deprojected_queue[idx-start_idx].shape[0], 1), device='cuda:0')], dim=1)
+                #     self.deprojected_queue[idx-start_idx] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
         self.start_idx = len(self.pipeline.datamanager.train_dataset)
 
     def setup(self, test_mode: Literal["test", "val", "inference"] = "val") -> None:
