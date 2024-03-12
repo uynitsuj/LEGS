@@ -74,7 +74,7 @@ class L3GSDataManagerConfig(DataManagerConfig):
     """Specifies the image indices to use during eval; if None, uses all."""
     cache_images: Literal["no-cache", "cpu", "gpu"] = "cpu"
     """Whether to cache images in memory. If "numpy", caches as numpy arrays, if "torch", caches as torch tensors."""
-    patch_tile_size_range: Tuple[int, int] = (0.04, 0.45)
+    patch_tile_size_range: Tuple[int, int] = (0.10, 0.45)
     """The range of tile sizes to sample from for patch-based training"""
     patch_tile_size_res: int = 7
     """The number of tile sizes to sample from for patch-based training"""
@@ -171,7 +171,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         self.clip_interpolator = PyramidEmbeddingDataloader(
             image_list=[],
-            device='cuda:1',
+            device='cuda:0',
             # device='cuda:0',
             cfg={
                 "tile_size_range": list(self.config.patch_tile_size_range),

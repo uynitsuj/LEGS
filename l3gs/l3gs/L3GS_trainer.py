@@ -164,14 +164,13 @@ class TricamTrainerNode(Node):
         print("Appending imagepose to queue",flush=True)
         # self.trainer_.image_add_callback_queue.append(msg)
         if msg.got_prev_poses is False:
-            self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses))
+            self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses, 0))
         else:
-            self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses))
+            self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses, 0))
 
-        # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None))
+        self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
 
-        # self.trainer_.image_add_callback_queue.append(msg.image_poses[2])
-
+        # self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
 
 class Trainer:
     """Trainer class
@@ -767,62 +766,45 @@ class Trainer:
         return P_world[:, :3], colors[sampled_indices]
     
     # @profile
-    def process_image(self, msg:ImagePose, step, points, clrs, clip_dict = None, dino_data = None):
+    def process_image(self, msg:ImagePose, step, points, clrs, camlr, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
         '''
-        # start = time.time()
-        camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
-        # CONSOLE.print("Adding image to dataset")
+        camera_to_worlds = None
+        if camlr == 0:
+            camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+        elif camlr == 1:
+            camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+            import pdb; pdb.set_trace()
+            cam_0_to_1 = torch.tensor([[0.0, 0.0, 1.0, 0.0],
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 0.0, 1.0]])
+            
+        elif camlr == 2:
+            camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+            import pdb; pdb.set_trace()
+            cam_0_to_2 = torch.tensor([[0.0, 0.0, 1.0, 0.0],
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 0.0, 1.0]])
+
+        
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
-        # import pdb; pdb.set_trace()
         fx = torch.tensor([msg.fl_x])
         fy = torch.tensor([msg.fl_y])
         cy = torch.tensor([msg.cy])
         cx = torch.tensor([msg.cx])
-        # print('fx', fx, 'fy', fy, 'cx', cx, 'cy', cy)
-        # import pdb; pdb.set_trace()
-
-        # cx = torch.tensor([msg.cy])
-        # cy = torch.tensor([msg.cx])
-        # width = torch.tensor([msg.w])
-        # height = torch.tensor([msg.h])
-        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        # camera_type = CameraType.PERSPECTIVE
-        # c = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
 
         ### Multicamera Support
         width = torch.tensor([msg.w])
         height = torch.tensor([msg.h])
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
-        camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type).reshape(())
-        # K = camera.get_intrinsics_matrices().numpy()
 
-        # if self.multicam:
-        #     crop_top = 60
-        #     crop_bottom = 480 - 60
-        #     if msg.w != msg.img.width or msg.h != msg.img.height:
-        #         # crop image_data to new_W new_H centered
-        #         image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
-        #         # print('after croppping', image_data.shape)
-        #         import torch.nn.functional as F
-        #         image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
-        #         # back to HxWxC
-        #         image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
-        #         # print('after resize', image_data.shape)
-        # K, image_data, mask = self._undistort_image(camera, get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3).numpy(), {}, image_data.cpu().numpy(), K)
-        # image_data = torch.from_numpy(image_data).to(torch.float32)
-        # fx = float(K[0, 0])
-        # fy = float(K[1, 1])
-        # cx = float(K[0, 2])
-        # cy = float(K[1, 2])
-        # width = image_data.shape[1]
-        # height = image_data.shape[0]
-        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        # camera_type = CameraType.PERSPECTIVE
-        # camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+        metadata = {"camlr": camlr}
+        camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type, metadata = metadata).reshape(())
 
         with self.train_lock:
             self.pipeline.process_image(img = image_data, depth = depth, pose = camera, clip=clip_dict, dino=dino_data)
@@ -839,17 +821,7 @@ class Trainer:
         R = vtf.SO3.from_matrix(c2w[:3, :3])
         R = R @ vtf.SO3.from_x_radians(np.pi)
         cidx = self.viewer_state._pick_drawn_image_idxs(idx+1)[-1]
-        # scale_factor = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        # camera_handle = self.viser_server.add_camera_frustum(
-        #         name=f"/cameras/camera_{idx:05d}",
-        #         fov=float(2 * np.arctan(camera.cx / camera.fx[0])),
-        #         scale=self.config.camera_frustum_scale,
-        #         aspect=float(camera.cx[0] / camera.cy[0]),
-        #         image=image_uint8,
-        #         wxyz=R.wxyz,
-        #         position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
-        #     )
-        # scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
@@ -1081,7 +1053,9 @@ class Trainer:
                 prev_poses = None
                 if has_image_add:
                     #Not sure if we want to loop till the queue is empty or not
-                    msg, points, colors, prev_poses, pp_sig = self.image_add_callback_queue.pop(0)
+                    msg, points, colors, prev_poses, pp_sig, cam_lr = self.image_add_callback_queue.pop(0)
+
+                    # import pdb; pdb.set_trace()
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
@@ -1093,15 +1067,15 @@ class Trainer:
 
                         else:
                             self.add_to_clip_queue.append(msg)
-                            self.image_process_queue.append((msg, points, colors))
+                            self.image_process_queue.append((msg, points, colors, cam_lr))
                             self.imgidx += 1
 
                         if not self.done_scale_calc:
                             parser_scale_list.append(msg.pose)
                         
                 while len(self.image_process_queue) > 0:
-                    message, pts, clrs = self.image_process_queue.pop(0)
-                    self.process_image(message, step, pts, clrs)
+                    message, pts, clrs, camlr = self.image_process_queue.pop(0)
+                    self.process_image(message, step, pts, clrs, camlr)
                 
                 if self.train_lerf and len(self.add_to_clip_queue) > 0:
                     self.add_img_callback(self.add_to_clip_queue.pop(0))
