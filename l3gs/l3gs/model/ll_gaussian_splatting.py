@@ -262,6 +262,15 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 )  # This color is the same as the default background color in Viser. This would only affect the background color when rendering.        
         else:
             self.background_color = get_color(self.config.background_color)
+        self.image_embeds = torch.nn.Embedding(1000, 16)
+        self.appearance_nn = torch.nn.Sequential(
+            torch.nn.Linear(16, 32),
+            torch.nn.ReLU(),
+            torch.nn.Linear(32, 32),
+            torch.nn.ReLU(),
+            torch.nn.Linear(32, 6),
+            torch.nn.Sigmoid(),
+        )
         self.viewer_control = ViewerControl()
         self.viser_scale_ratio = 0.1
 
@@ -821,6 +830,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             Mapping of different parameter groups
         """
         gps = self.get_gaussian_param_groups()
+        gps["appearance_embed"] = list(self.appearance_nn.parameters()) + list(self.image_embeds.parameters())
         return gps
 
     def project_gaussians(self, camera, downscale_factor=1):
@@ -1037,6 +1047,11 @@ class LLGaussianSplattingModel(SplatfactoModel):
             return_alpha=True,
         )  # type: ignore
         alpha = alpha[..., None]
+        if camera.metadata is not None and "cam_idx" in camera.metadata:
+            cam_id = camera.metadata["cam_idx"]
+            embeds = self.image_embeds(torch.tensor(cam_id, device=self.device))
+            affine_shift = self.appearance_nn(embeds)
+            rgb = rgb * (1 + affine_shift[:3]) + affine_shift[3:]
         rgb = torch.clamp(rgb, max=1.0)  # type: ignore
         
         outputs["rgb"] = rgb

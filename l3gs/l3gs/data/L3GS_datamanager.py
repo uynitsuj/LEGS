@@ -429,7 +429,6 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         
         
         # start = time.time()
-        # import pdb; pdb.set_trace()
         data = copy(self.cached_train[image_idx])
         # import pdb; pdb.set_trace()
         data["image"] = data["image"].to(self.device)

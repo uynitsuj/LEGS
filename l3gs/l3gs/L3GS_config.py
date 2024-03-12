@@ -80,9 +80,13 @@ l3gs_method = MethodSpecification(
                 "scheduler": ExponentialDecaySchedulerConfig(lr_final=5e-5, max_steps=30000),
             },
              "lerf": {
-            "optimizer": AdamOptimizerConfig(lr=2.5e-3, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-3, max_steps=15000),
-        },
+                "optimizer": AdamOptimizerConfig(lr=2.5e-3, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-3, max_steps=15000),
+            },
+            "appearance_embed": {
+                "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+                "scheduler": None,
+            },
         },
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
         vis="viewer",
