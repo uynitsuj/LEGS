@@ -171,8 +171,6 @@ class TricamTrainerNode(Node):
 
         
 
-        # self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
-
 class Trainer:
     """Trainer class
 
