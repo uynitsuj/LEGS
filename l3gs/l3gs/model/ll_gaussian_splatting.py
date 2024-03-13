@@ -206,6 +206,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.deprojected_new = []
         self.colors_new = []
         self.postBA = False
+        self.localized_query = None
 
     def populate_modules(self):
         if self.seed_pts is not None and not self.config.random_init:
@@ -1421,7 +1422,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
             # Do K nearest neighbors for each point and then avg the clip hash for each point based on the KNN
             # import pdb; pdb.set_trace()
-            means_freeze = self.means.data.clone()
+            means_freeze = self.means.data.clone().detach()
             distances, indicies = self.k_nearest_sklearn(means_freeze, 3, True)
             distances = torch.from_numpy(distances).to(self.device)
             indicies = torch.from_numpy(indicies).view(-1)
@@ -1457,12 +1458,15 @@ class LLGaussianSplattingModel(SplatfactoModel):
             wxyz=(1.0, 0.0, 0.0, 0.0),
             position=(query[0], query[1], query[2]),
             )
-            
-            transform = self.datamanager.train_dataset._dataparser_outputs.dataparser_transform
-            scale = self.datamanager.train_dataset._dataparser_outputs.dataparser_scale
 
-            print(transform)
-            print(scale)
+
+            H = self._dataparser_outputs.dataparser_transform
+            row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=H.device)
+
+            inv_H = torch.cat([torch.cat([H[:3, :3].transpose(1, 0), H[:3, 3:]], dim=1), row], dim=0)
+            query_world = inv_H @ torch.tensor([query[0], query[1], query[2], 1],dtype=torch.float32,device=H.device)
+            print(query_world)
+            
 
             # self._crop_handle = self.viewer_control.viser_server.add_transform_controls("Crop Points", depth_test=False, line_width=4.0)
             # world_center = tuple(p / self.viser_scale_ratio for p in self._crop_center_init)
