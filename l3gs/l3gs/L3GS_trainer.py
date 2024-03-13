@@ -48,6 +48,7 @@ import rclpy
 from rclpy.node import Node
 from lifelong_msgs.msg import ImagePose
 from lifelong_msgs.msg import ImagePoses
+from geometry_msgs.msg import Vector3
 from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
@@ -159,19 +160,29 @@ class TricamTrainerNode(Node):
         super().__init__('trainer_node')
         self.trainer_ = trainer
         self.subscription_ = self.create_subscription(ImagePoses,"/camera/color/imagepose",self.add_img_callback,100)
+        self.publisher_ = self.create_publisher(Vector3, "/gsplat/coord", 10)
+        timer_period = 0.5  # seconds
+        self.timer = self.create_timer(timer_period, self.pub_coord_callback)
 
     def add_img_callback(self,msg):
         print("Appending imagepose to queue",flush=True)
         # self.trainer_.image_add_callback_queue.append(msg)
         if msg.got_prev_poses is False:
             self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses, 0))
-            self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
+            # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
+            self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
         else:
             self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses, 0))
 
-        
-
         # self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
+    def pub_coord_callback(self):
+        if self.trainer_.localized_coords is not None:
+            coord = self.trainer_.localized_coords
+            msg = Vector3()
+            msg.x = coord[0]
+            msg.y = coord[1]
+            msg.z = coord[2]
+            self.publisher_.publish(msg)
 
 class Trainer:
     """Trainer class
@@ -248,6 +259,7 @@ class Trainer:
         self.train_lerf = False
         self.diff_wait_counter = 0
         self.multicam = True
+        self.localized_coords = None
 
     def handle_stage_btn(self, handle: ViewerButton):
         import os.path as osp
@@ -784,7 +796,7 @@ class Trainer:
         elif camlr == 2:
             camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
             row = torch.tensor([[0,0,0,1]],dtype=torch.float32)
-            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), torch.matmul(cam_0_to_1, cam_1_to_2))[:3,:]
+            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), torch.matmul(cam_1_to_2, cam_0_to_1))[:3,:]
         
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
@@ -919,10 +931,10 @@ class Trainer:
                 self.viewer_state.camera_handles[idxs[idx * cam_factor + i]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
                 self.viewer_state.camera_handles[idxs[idx * cam_factor + i]].wxyz = R.wxyz
 
-            if idx > missed_depro:
-                if start_idx == 0:
-                    points_homog = torch.cat([self.deprojected_queue[idx-missed_depro-1], torch.ones((self.deprojected_queue[idx-missed_depro-1].shape[0], 1), device='cuda:0')], dim=1)
-                    self.deprojected_queue[idx-missed_depro-1] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
+            # if idx > missed_depro:
+            #     if start_idx == 0:
+            #         points_homog = torch.cat([self.deprojected_queue[idx-missed_depro-1], torch.ones((self.deprojected_queue[idx-missed_depro-1].shape[0], 1), device='cuda:0')], dim=1)
+            #         self.deprojected_queue[idx-missed_depro-1] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
                 # else:
                 #     points_homog = torch.cat([self.deprojected_queue[idx-start_idx], torch.ones((self.deprojected_queue[idx-start_idx].shape[0], 1), device='cuda:0')], dim=1)
                 #     self.deprojected_queue[idx-start_idx] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
@@ -1051,6 +1063,8 @@ class Trainer:
             self.imgidx = 0
             
             while True:
+                if self.pipeline.model.localized_query is not None:
+                    self.localized_coords = self.pipeline.model.localized_query
                 rclpy.spin_once(trainer_node,timeout_sec=0.00)
 
                 has_image_add = len(self.image_add_callback_queue) > 0
@@ -1061,6 +1075,7 @@ class Trainer:
                     msg, points, colors, prev_poses, pp_sig, cam_lr = self.image_add_callback_queue.pop(0)
 
                     # import pdb; pdb.set_trace()
+
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
@@ -1182,7 +1197,7 @@ class Trainer:
                             if group == 'lerf':
                                 continue
                             expain.append("exp_avg" in self.optimizers.optimizers[group].state[self.optimizers.optimizers[group].param_groups[0]["params"][0]].keys())
-                        if all(expain) and BA_flag:
+                        if all(expain): # and BA_flag:
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
 
