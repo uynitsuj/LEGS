@@ -67,7 +67,7 @@ class L3GSDataset(InputDataset):
                                         [1.0, 0.0, 0.0, 0.050404],
                                         [0.0, 0.0, 0.0, 1.0]]) # ZED_L to Realsense
         self.cam_1_to_2 = torch.tensor([[0.0, 0.0, -1.0, 0.027404],
-                                        [0.0, 1.0, 0.0, 0.01016],
+                                        [0.0, 1.0, 0.0, 0.03937],
                                         [1.0, 0.0, 0.0, -0.016605],
                                         [0.0, 0.0, 0.0, 1.0]]) # Realsense to ZED_R
 
@@ -122,7 +122,6 @@ class L3GSDataset(InputDataset):
         self.BA_poses = poses
         BA_deltas = []
         cam_factor = self.cur_size // poses.shape[0]
-        # import pdb; pdb.set_trace()
         for idx in range(poses.shape[0]):
 
             new_posi = torch.tensor([self.BA_poses[idx, 0], self.BA_poses[idx, 1], self.BA_poses[idx, 2]])
@@ -153,7 +152,10 @@ class L3GSDataset(InputDataset):
             self.cameras.camera_to_worlds[idx * cam_factor, ...] = c2w
 
             if cam_factor == 2:
-                self.cameras.camera_to_worlds[idx * cam_factor + 1, ...] = torch.matmul(torch.cat([c2w, row]), self.cam_0_to_1)[:3,:]
+                # self.cameras.camera_to_worlds[idx * cam_factor + 1, ...] = torch.matmul(torch.cat([c2w, row]), self.cam_0_to_1)[:3,:]
+                self.cameras.camera_to_worlds[idx * cam_factor + 1, ...] = torch.matmul(torch.cat([c2w, row]), torch.matmul(self.cam_0_to_1, self.cam_1_to_2))[:3,:]
+            if cam_factor == 3:
+                self.cameras.camera_to_worlds[idx * cam_factor + 2, ...] = torch.matmul(torch.cat([c2w, row]), torch.matmul(self.cam_0_to_1, self.cam_1_to_2))[:3,:]
 
         return BA_deltas
     
