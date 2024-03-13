@@ -165,7 +165,8 @@ class TricamTrainerNode(Node):
         # self.trainer_.image_add_callback_queue.append(msg)
         if msg.got_prev_poses is False:
             self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses, 0))
-            self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
+            # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
+            self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
         else:
             self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses, 0))
 
@@ -782,7 +783,7 @@ class Trainer:
         elif camlr == 2:
             camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
             row = torch.tensor([[0,0,0,1]],dtype=torch.float32)
-            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), torch.matmul(cam_0_to_1, cam_1_to_2))[:3,:]
+            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), torch.matmul(cam_1_to_2, cam_0_to_1))[:3,:]
         
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
@@ -898,7 +899,6 @@ class Trainer:
         idxs = list(self.viewer_state.camera_handles.keys())
         missed_depro = len(BA_deltas) - len(self.deprojected_queue)
         cam_factor = len(self.pipeline.datamanager.train_dataset) // len(BA_deltas)
-        # import pdb; pdb.set_trace()
         for idx in range(start_idx, len(BA_deltas)):
 
             C = self.pipeline.datamanager.train_dataset.cameras
@@ -1180,7 +1180,7 @@ class Trainer:
                             if group == 'lerf':
                                 continue
                             expain.append("exp_avg" in self.optimizers.optimizers[group].state[self.optimizers.optimizers[group].param_groups[0]["params"][0]].keys())
-                        if all(expain) and BA_flag:
+                        if all(expain):# and BA_flag:
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
 
