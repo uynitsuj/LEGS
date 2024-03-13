@@ -79,6 +79,8 @@ class L3GSDataset(InputDataset):
         if self.cur_size == 0:
             self.image_height = cam.height
             self.image_width = cam.width
+            self.depth_height = cam.height
+            self.depth_width = cam.width
             self.image_tensor = torch.ones(
                 self.num_images, self.image_height, self.image_width, 3, dtype=torch.float32
             ).to(self.device)
@@ -104,6 +106,7 @@ class L3GSDataset(InputDataset):
         self.image_tensor[self.cur_size,...] = img
         self.depth_tensor[self.cur_size,...] = depth.unsqueeze(-1)
         self.cur_size += 1
+        # import pdb; pdb.set_trace()
         # from torch.nn import functional as F
         # torch_img = img.permute(2, 0, 1).unsqueeze(0).float()
         # img = F.interpolate(torch_img,(self.image_height, self.image_width),mode='bilinear').squeeze(0).squeeze(0)
