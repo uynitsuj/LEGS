@@ -46,7 +46,9 @@ class OpenCLIPNetwork(BaseImageEncoder):
             pretrained=self.config.clip_model_pretrained,  # e.g., laion2b_s34b_b88k
             precision="fp16",
             device=self.config.device,
+            # device='cuda:1',
         )
+        # model.to('cuda:1')
         model.eval()
         self.tokenizer = open_clip.get_tokenizer(self.config.clip_model_type)
         self.model = model.to(self.config.device)
@@ -87,7 +89,6 @@ class OpenCLIPNetwork(BaseImageEncoder):
         self.positives = text_list
         with torch.no_grad():
             tok_phrases = torch.cat([self.tokenizer(phrase) for phrase in self.positives]).to(self.config.device)
-            # import pdb; pdb.set_trace()
             self.pos_embeds = self.model.encode_text(tok_phrases)
         self.pos_embeds /= self.pos_embeds.norm(dim=-1, keepdim=True)
         self.pos_embeds = self.pos_embeds.to(self.config.device)

@@ -179,9 +179,9 @@ class TricamTrainerNode(Node):
         if self.trainer_.localized_coords is not None:
             coord = self.trainer_.localized_coords
             msg = Vector3()
-            msg.x = coord[0]
-            msg.y = coord[1]
-            msg.z = coord[2]
+            msg.x = float(coord[0])
+            msg.y = float(coord[1])
+            msg.z = float(coord[2])
             self.publisher_.publish(msg)
 
 class Trainer:
@@ -692,7 +692,7 @@ class Trainer:
             print(poses, affected_gaussians_idxs)
         # TODO: mask out regions in all training images
     
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 800, device = 'cuda:0'):
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 500, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -725,11 +725,12 @@ class Trainer:
         # num_points = flat_depth.shape[0]
         # sampled_indices = torch.randint(0, num_points, (num_samples,))
         non_zero_depth_indices = torch.nonzero(flat_depth != 0).squeeze()
-
         # Ensure there are enough non-zero depth indices to sample from
         if non_zero_depth_indices.numel() < num_samples:
             num_samples = non_zero_depth_indices.numel()
         # Sample from non-zero depth indices
+        if num_samples == 0:
+            return torch.zeros((1, 3), device=device), torch.zeros((1, 3), device=device)
         sampled_indices = non_zero_depth_indices[torch.randint(0, non_zero_depth_indices.shape[0], (num_samples,))]
 
         sampled_depth = flat_depth[sampled_indices] * scale
@@ -786,6 +787,7 @@ class Trainer:
         camera_to_worlds = None
         cam_0_to_1 = self.pipeline.datamanager.train_dataset.cam_0_to_1 # ZED_L to Realsense
         cam_1_to_2 = self.pipeline.datamanager.train_dataset.cam_1_to_2 # Realsense to ZED_R
+        cam_0_to_2 = self.pipeline.datamanager.train_dataset.cam_0_to_2 # ZED_L to ZED_R
         
         if camlr == 0:
             camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
@@ -796,7 +798,7 @@ class Trainer:
         elif camlr == 2:
             camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
             row = torch.tensor([[0,0,0,1]],dtype=torch.float32)
-            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), torch.matmul(cam_1_to_2, cam_0_to_1))[:3,:]
+            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), cam_0_to_2)[:3,:]
         
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
@@ -848,6 +850,7 @@ class Trainer:
         self.viewer_state.camera_handles[cidx] = camera_handle
         self.viewer_state.original_c2w[cidx] = c2w
 
+        # import pdb; pdb.set_trace() 
         if not self.multicam:
             project_interval = 4
             if self.done_scale_calc and msg.depth is not None and idx % project_interval == 0:
@@ -886,18 +889,15 @@ class Trainer:
                 deprojected, colors = self.deproject_droidslam_point_cloud(clrs, points, frame1)
                 self.deprojected_queue.append(deprojected)
                 self.colors_queue.append(colors)
-            # else:
-            #     project_interval = 3
-            #     rs_interval = 3
-            #     if self.done_scale_calc and msg.depth.encoding != '' and idx % rs_interval == 0:
-            #         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
-            #         depth = depth.unsqueeze(0).unsqueeze(0)
-            #         if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
-            #             import torch.nn.functional as F
-            #             depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
-            #         deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
-            #         self.deprojected_queue.extend(deprojected)
-            #         self.colors_queue.extend(colors)
+            # ZED
+            elif self.done_scale_calc and msg.depth.encoding != '' and camlr == 2: # and idx+1 % rs_interval == 0:
+                print("ZED RIGHT")
+                depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'32FC1').astype(np.float32),dtype = torch.float32)
+                depth = depth.unsqueeze(0).unsqueeze(0)
+                
+                deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+                self.deprojected_queue.append(deprojected)
+                self.colors_queue.append(colors)
             #     elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
             #         depth = self.pipeline.monodepth_inference(image_data.numpy())
             #         # depth = torch.rand((1,1,480,640))
@@ -905,8 +905,6 @@ class Trainer:
             #         self.deprojected_queue.extend(deprojected)
             #         self.colors_queue.extend(colors)
 
-    # def add_to_clip(clip_dict = None):
-    #     self.pipeline.add_to_clip
 
     def update_poses(self, BA_deltas, start_idx):
         idxs = list(self.viewer_state.camera_handles.keys())
