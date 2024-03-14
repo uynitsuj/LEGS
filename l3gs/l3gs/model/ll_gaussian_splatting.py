@@ -282,7 +282,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.relevancy_thresh = ViewerSlider("Relevancy Thresh", 0.0, 0, 1.0, 0.01)
 
         self._crop_center_init = None
-        self.crop_ids = None#torch.ones_like(self.means[:,0],dtype=torch.bool)
+        self.crop_ids = None #torch.ones_like(self.means[:,0],dtype=torch.bool)
         self.dropout_mask = None
         self.original_means = None
         self.clrs = None
@@ -1305,7 +1305,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         #     # import pdb; pdb.set_trace()
         #     depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
         #     loss_dict["depth_loss"] = depth_correlation_loss
-        # elif "depth" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
+        # if "depth" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 2000:
         #     assert outputs["depth"].shape == batch["depth"].shape
         #     gt_depth = batch["depth"].permute(2, 0, 1)
         #     pred_depth = outputs["depth"].permute(2, 0, 1)
@@ -1451,21 +1451,29 @@ class LLGaussianSplattingModel(SplatfactoModel):
             
             query = self._crop_center_init / self.viser_scale_ratio
 
+            # self.viewer_control.viser_server.add_icosphere(
+            # "/query",
+            # radius = 4, 
+            # color = (1.0, 0.0, 0.0),
+            # position=(query[0], query[1], query[2]),
+            # )
             self.viewer_control.viser_server.add_frame(
             "/query",
-            axes_length = 15, 
-            axes_radius = 0.025 * 18,
+            axes_length = 4, 
+            axes_radius = 0.025 * 3,
             wxyz=(1.0, 0.0, 0.0, 0.0),
             position=(query[0], query[1], query[2]),
             )
 
 
-            H = self._dataparser_outputs.dataparser_transform
+            H = self.datamanager.train_dataset._dataparser_outputs.dataparser_transform
             row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=H.device)
 
-            inv_H = torch.cat([torch.cat([H[:3, :3].transpose(1, 0), H[:3, 3:]], dim=1), row], dim=0)
+            inv_H = torch.cat([torch.cat([H[:3, :3].transpose(1, 0), -H[:3, 3:]], dim=1), row], dim=0)
             query_world = inv_H @ torch.tensor([query[0], query[1], query[2], 1],dtype=torch.float32,device=H.device)
-            print(query_world)
+            print(query_world / VISER_NERFSTUDIO_SCALE_RATIO)
+
+            self.localized_query = query_world[:3].cpu().numpy() / VISER_NERFSTUDIO_SCALE_RATIO
             
 
             # self._crop_handle = self.viewer_control.viser_server.add_transform_controls("Crop Points", depth_test=False, line_width=4.0)
