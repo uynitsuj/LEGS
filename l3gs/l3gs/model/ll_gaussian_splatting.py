@@ -1335,7 +1335,11 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 outputs["clip"], batch["clip"].to(self.device).to(torch.float32), delta=1.25, reduction="none"
             )
             loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
-
+        
+        psnr = self.psnr(gt_img, pred_img)
+        # print(f"PSNR: {psnr.item()}")
+        # print(f"PSNR: {psnr.item()}")
+        
         return loss_dict
 
     @torch.no_grad()
@@ -1388,6 +1392,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
+        print(f"PSNR: {psnr.item()}, SSIM: {ssim}, LPIPS: {lpips}")
         metrics_dict["lpips"] = float(lpips)
 
         images_dict = {"img": combined_rgb}

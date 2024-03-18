@@ -170,7 +170,8 @@ class TricamTrainerNode(Node):
         if msg.got_prev_poses is False:
             self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses, 0))
             # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
-            self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
+            # ZED RIGHT
+        #     self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
         else:
             self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses, 0))
 
@@ -835,7 +836,7 @@ class Trainer:
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale= 0.5,
+                    scale = 0.20,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
@@ -1194,7 +1195,7 @@ class Trainer:
                             if group == 'lerf':
                                 continue
                             expain.append("exp_avg" in self.optimizers.optimizers[group].state[self.optimizers.optimizers[group].param_groups[0]["params"][0]].keys())
-                        if all(expain):# and BA_flag:
+                        if all(expain): # and BA_flag:
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
 
