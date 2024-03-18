@@ -171,7 +171,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
 
         self.clip_interpolator = PyramidEmbeddingDataloader(
             image_list=[],
-            device='cuda:1',
+            device='cuda:0',
             # device='cuda:0',
             cfg={
                 "tile_size_range": list(self.config.patch_tile_size_range),
@@ -185,7 +185,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         )
         self.clip_interpolator.start()
         # self.clip_interpolator.device = 'cuda:0' #??
-        self.clip_interpolator.device = 'cuda:1'
+        self.clip_interpolator.device = 'cuda:0'
         self.clip_interpolator.create(None, self.network.setup())
 
         self.curr_scale = None
