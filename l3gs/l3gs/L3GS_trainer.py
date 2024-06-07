@@ -171,7 +171,7 @@ class TricamTrainerNode(Node):
             self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses, 0))
             # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
             # ZED RIGHT
-        #     self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
+            # self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
         else:
             self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses, 0))
 
