@@ -10,6 +10,8 @@
 
 *.png
 
+!l3gs/l3gs/scripts/*
+
 outputs/unnamed/
 outputs/*
 l3gs/build/*
