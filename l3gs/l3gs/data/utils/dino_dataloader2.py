@@ -4,12 +4,12 @@ import torch
 from l3gs.data.utils.dino_extractor import ViTExtractor
 from l3gs.data.utils.feature_dataloader import FeatureDataloader
 from tqdm import tqdm
-
+import time
 
 class DinoDataloader(FeatureDataloader):
-    dino_model_type = "dino_vits8"
-    dino_stride = 8
-    dino_load_size = 500
+    dino_model_type = "dinov2_vits14"
+    dino_stride = 14
+    dino_load_size = 462
     dino_layer = 11
     dino_facet = "key"
     dino_bin = False
@@ -54,6 +54,7 @@ class DinoDataloader(FeatureDataloader):
     def generate_dino_embed(self, image):
         C, H, W = image.shape
         extractor = ViTExtractor(self.dino_model_type, self.dino_stride)
+        print(self.dino_load_size)
         preproc_image = extractor.preprocess(image, self.dino_load_size)[0].to(self.device)
         start = time.time()
         with torch.no_grad():
