@@ -1,4 +1,3 @@
-# ruff: noqa: E741
 # Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,12 +18,17 @@ NeRF implementation that combines many recent advancements.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Type, Union
-
-import numpy as np
 import torch
+from nerfstudio.data.scene_box import OrientedBox
+from torch.nn import Parameter
+from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+import torchvision.transforms.functional as TF
+from typing_extensions import Literal
+
+from nerfstudio.cameras.cameras import Cameras
 from gsplat.cuda_legacy._torch_impl import quat_to_rotmat
 
 try:
@@ -32,15 +36,26 @@ try:
 except ImportError:
     print("Please install gsplat>=1.0.0")
 from gsplat.cuda_legacy._wrapper import num_sh_bases
-from pytorch_msssim import SSIM
-from torch.nn import Parameter
-from typing_extensions import Literal
 
-from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
-from nerfstudio.cameras.cameras import Cameras
-from nerfstudio.data.scene_box import OrientedBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.engine.optimizers import Optimizers
+from nerfstudio.models.base_model import Model, ModelConfig
+import math
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
+import viser.transforms as vtf
+# from nerfstudio.model_components.losses import scale_gauss_gradients_by_distance_squared
+from nerfstudio.viewer.viewer_elements import ViewerButton, ViewerSlider, ViewerControl, ViewerVec3
+# from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
+from nerfstudio.models.splatfacto import SplatfactoModelConfig, SplatfactoModel
+from l3gs.fields.gaussian_lerf_field import GaussianLERFField
+from l3gs.encoders.image_encoder import BaseImageEncoderConfig, BaseImageEncoder
+from l3gs.field_components.gaussian_lerf_fieldheadnames import GaussianLERFFieldHeadNames
+from nerfstudio.viewer.viewer import VISER_NERFSTUDIO_SCALE_RATIO
+
+from nerfstudio.model_components.losses import depth_ranking_loss
+from pytorch_msssim import  SSIM
+from nerfstudio.utils.colormaps import apply_colormap
 
 # need following import for background color override
 from nerfstudio.model_components import renderers
@@ -48,16 +63,9 @@ from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils.colors import get_color
 from nerfstudio.utils.rich_utils import CONSOLE
 
-# L3GS imports
-from nerfstudio.models.splatfacto import SplatfactoModelConfig, SplatfactoModel
-from nerfstudio.viewer.viewer_elements import ViewerButton, ViewerSlider, ViewerControl, ViewerVec3
-from l3gs.fields.gaussian_lerf_field import GaussianLERFField
-from l3gs.encoders.image_encoder import BaseImageEncoderConfig, BaseImageEncoder
-from l3gs.field_components.gaussian_lerf_fieldheadnames import GaussianLERFFieldHeadNames
-from nerfstudio.viewer.viewer import VISER_NERFSTUDIO_SCALE_RATIO
-from nerfstudio.utils.colormaps import apply_colormap
-import viser.transforms as vtf
-
+import torch
+from jaxtyping import Float
+from torch import Tensor
 
 def random_quat_tensor(N):
     """
@@ -76,7 +84,6 @@ def random_quat_tensor(N):
         dim=-1,
     )
 
-
 def RGB2SH(rgb):
     """
     Converts from RGB values [0,1] to the 0th spherical harmonic coefficient
@@ -92,6 +99,25 @@ def SH2RGB(sh):
     C0 = 0.28209479177387814
     return sh * C0 + 0.5
 
+def projection_matrix(znear, zfar, fovx, fovy, device: Union[str,torch.device]="cpu"):
+    """
+    Constructs an OpenGL-style perspective projection matrix.
+    """
+    t = znear * math.tan(0.5 * fovy)
+    b = -t
+    r = znear * math.tan(0.5 * fovx)
+    l = -r
+    n = znear
+    f = zfar
+    return torch.tensor(
+        [
+            [2 * n / (r - l), 0.0, (r + l) / (r - l), 0.0],
+            [0.0, 2 * n / (t - b), (t + b) / (t - b), 0.0],
+            [0.0, 0.0, (f + n) / (f - n), -1.0 * f * n / (f - n)],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+        device=device,
+    )
 
 def resize_image(image: torch.Tensor, d: int):
     """
@@ -128,30 +154,29 @@ def get_viewmat(optimized_camera_to_world):
     return viewmat
 
 
+
 @dataclass
 class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """Gaussian Splatting Model Config"""
 
     _target: Type = field(default_factory=lambda: LLGaussianSplattingModel)
-    warmup_length: int = 500
+    warmup_length: int = 1000
     """period of steps where refinement is turned off"""
-    refine_every: int = 100
+    refine_every: int = 75
     """period of steps where gaussians are culled and densified"""
-    resolution_schedule: int = 3000
+    resolution_schedule: int = 250
     """training starts at 1/d resolution, every n steps this is doubled"""
     background_color: Literal["random", "black", "white"] = "random"
     """Whether to randomize the background color."""
-    num_downscales: int = 2
+    num_downscales: int = 0
     """at the beginning, resolution is 1/2^d, where d is this number"""
-    cull_alpha_thresh: float = 0.1
-    """threshold of opacity for culling gaussians. One can set it to a lower value (e.g. 0.005) for higher quality."""
+    cull_alpha_thresh: float = 0.085
+    """threshold of opacity for culling gaussians"""
     cull_scale_thresh: float = 0.5
-    """threshold of scale for culling huge gaussians"""
-    continue_cull_post_densification: bool = True
-    """If True, continue to cull gaussians post refinement"""
+    """threshold of scale for culling gaussians"""
     reset_alpha_every: int = 30
     """Every this many refinement steps, reset the alpha"""
-    densify_grad_thresh: float = 0.0008
+    densify_grad_thresh: float = 0.0002
     """threshold of positional gradient norm for densifying gaussians"""
     densify_size_thresh: float = 0.01
     """below this size, gaussians are *duplicated*, otherwise split"""
@@ -159,16 +184,18 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """number of samples to split gaussians into"""
     sh_degree_interval: int = 1000
     """every n intervals turn on another sh degree"""
+    cull_screen_size: float = 0.15
+    """if a gaussian is more than this percent of screen space, cull it"""
     split_screen_size: float = 0.05
     """if a gaussian is more than this percent of screen space, split it"""
-    stop_screen_size_at: int = 4000
+    stop_screen_size_at: int = 50000
     """stop culling/splitting at this step WRT screen size of gaussians"""
     random_init: bool = False
     """whether to initialize the positions uniformly randomly (not SFM points)"""
     num_random: int = 15
     """Number of gaussians to initialize if random init is used"""
-    random_scale: float = 100.0
-    "Size of the cube to initialize random gaussians within"
+    random_scale: float = 500.0
+    """Size of the cube to initialize random gaussians within"""
     init_opacity: float = 0.2
     """Initial opacity of deprojected gaussians"""
     ssim_lambda: float = 0.2
@@ -177,14 +204,14 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """stop splitting at this step"""
     sh_degree: int = 3
     """maximum degree of spherical harmonics to use"""
+    clip_loss_weight: float = 0.1
+    """weight of clip loss"""
     use_scale_regularization: bool = False
     """If enabled, a scale regularization introduced in PhysGauss (https://xpandora.github.io/PhysGaussian/) is used for reducing huge spikey gaussians."""
     max_gauss_ratio: float = 10.0
     """threshold of ratio of gaussian max to min scale before applying regularization
     loss from the PhysGaussian paper
     """
-    output_depth_during_training: bool = False
-    """If True, output depth during training. Otherwise, only output depth during evaluation."""
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     """
     Classic mode of rendering will use the EWA volume splatting with a [0.3, 0.3] screen space blurring kernel. This
@@ -195,26 +222,21 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     However, PLY exported with antialiased rasterize mode is not compatible with classic mode. Thus many web viewers that
     were implemented for classic mode can not render antialiased mode PLY properly without modifications.
     """
-    camera_optimizer: CameraOptimizerConfig = field(default_factory=lambda: CameraOptimizerConfig(mode="off"))
-    """Config of the camera optimizer to use"""
-
 
 class LLGaussianSplattingModel(SplatfactoModel):
-    """Nerfstudio's implementation of Gaussian Splatting
+    """Gaussian Splatting model
 
     Args:
-        config: Splatfacto configuration to instantiate model
+        config: Gaussian Splatting configuration to instantiate model
     """
 
-    config: LLGaussianSplattingModel
+    config: LLGaussianSplattingModelConfig
 
-    def __init__(
-        self,
-        *args,
-        seed_points: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        **kwargs,
-    ):
-        self.seed_points = seed_points
+    def __init__(self, *args, **kwargs):
+        if "seed_points" in kwargs:
+            self.seed_pts = kwargs["seed_points"]
+        else:
+            self.seed_pts = None
         super().__init__(*args, **kwargs)
         self.deprojected_new = []
         self.colors_new = []
@@ -222,18 +244,18 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.localized_query = None
 
     def populate_modules(self):
-        if self.seed_points is not None and not self.config.random_init:
-            means = torch.nn.Parameter(self.seed_points[0])  # (Location, Color)
+        if self.seed_pts is not None and not self.config.random_init:
+            self.means = torch.nn.Parameter(self.seed_pts[0])  # (Location, Color)
         else:
-            means = torch.nn.Parameter((torch.rand((self.config.num_random, 3)) - 0.5) * self.config.random_scale)
+            self.means = torch.nn.Parameter((torch.rand((self.config.num_random, 3)) - 0.5) * self.config.random_scale)
         self.xys_grad_norm = None
-        distances, _ = self.k_nearest_sklearn(means.data, 3)
+        self.max_2Dsize = None
+        distances, _ = self.k_nearest_sklearn(self.means.data, 3)
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
         avg_dist = distances.mean(dim=-1, keepdim=True)/5.0
-        scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
-        num_points = means.shape[0]
-        quats = torch.nn.Parameter(random_quat_tensor(num_points))
+        self.scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
+        self.quats = torch.nn.Parameter(random_quat_tensor(self.num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
 
         self.gaussian_lerf_field = GaussianLERFField()
@@ -241,7 +263,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.image_encoder: BaseImageEncoder = self.kwargs["image_encoder"]
 
         if (
-            self.seed_points is not None
+            self.seed_pts is not None
             and not self.config.random_init
             # We can have colors without points.
             and self.seed_points[1].shape[0] > 0
@@ -253,51 +275,56 @@ class LLGaussianSplattingModel(SplatfactoModel):
             else:
                 CONSOLE.log("use color only optimization with sigmoid activation")
                 shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
-            features_dc = torch.nn.Parameter(shs[:, 0, :])
-            features_rest = torch.nn.Parameter(shs[:, 1:, :])
+            self.features_dc = torch.nn.Parameter(shs[:, 0, :])
+            self.features_rest = torch.nn.Parameter(shs[:, 1:, :])
         else:
-            features_dc = torch.nn.Parameter(torch.rand(num_points, 3))
-            features_rest = torch.nn.Parameter(torch.zeros((num_points, dim_sh - 1, 3)))
+            self.features_dc = torch.nn.Parameter(torch.rand(self.num_points, 3))
+            self.features_rest = torch.nn.Parameter(torch.zeros((self.num_points, dim_sh - 1, 3)))
 
-        opacities = torch.nn.Parameter(torch.logit(0.1 * torch.ones(num_points, 1)))
-        self.gauss_params = torch.nn.ParameterDict(
-            {
-                "means": means,
-                "scales": scales,
-                "quats": quats,
-                "features_dc": features_dc,
-                "features_rest": features_rest,
-                "opacities": opacities,
-            }
-        )
-
-        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
-            num_cameras=self.num_train_data, device="cpu"
-        )
+        self.opacities = torch.nn.Parameter(torch.logit(0.01 * torch.ones(self.num_points, 1)))
 
         # metrics
-        from torchmetrics.image import PeakSignalNoiseRatio
-        from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = SSIM(data_range=1.0, size_average=True, channel=3)
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
         self.step = 0
-
-        self.crop_box: Optional[OrientedBox] = None
-        if self.config.background_color == "random":
-            self.background_color = torch.tensor(
-                [0.1490, 0.1647, 0.2157]
-            )  # This color is the same as the default background color in Viser. This would only affect the background color when rendering.
-        else:
-            self.background_color = get_color(self.config.background_color)
-
-        #l3gs init
         self.steps_since_add = 0
 
+        self.crop_box: Optional[OrientedBox] = None
+        # self.back_color = torch.zeros(3)
+        if self.config.background_color == "random":
+                self.background_color = torch.tensor(
+                [0.1490, 0.1647, 0.2157]
+                )  # This color is the same as the default background color in Viser. This would only affect the background color when rendering.        
+        else:
+            self.background_color = get_color(self.config.background_color)
+        self.image_embeds = torch.nn.Embedding(1000, 16)
+        self.appearance_nn = torch.nn.Sequential(
+            torch.nn.Linear(16, 32),
+            torch.nn.ReLU(),
+            torch.nn.Linear(32, 32),
+            torch.nn.ReLU(),
+            torch.nn.Linear(32, 6),
+            torch.nn.Sigmoid(),
+        )
+        self.viewer_control = ViewerControl()
+        self.viser_scale_ratio = 0.1
+
+        # self.crop_to_word = ViewerButton("Crop gaussians to word", cb_hook=self.crop_to_word_cb)
         self.frame_on_word = ViewerButton("Localize Query", cb_hook=self.localize_query_cb)
+        # self.reset_crop = ViewerButton("Reset crop", cb_hook=self.reset_crop_cb)
+        # self.crop_scale = ViewerSlider("Crop scale", 0.1, 0, 3.0, 0.01)
         self.relevancy_thresh = ViewerSlider("Relevancy Thresh", 0.0, 0, 1.0, 0.01)
 
+        self._crop_center_init = None
+        self.crop_ids = None #torch.ones_like(self.means[:,0],dtype=torch.bool)
+        self.dropout_mask = None
+        self.original_means = None
+        self.clrs = None
+
+        # self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+        #     num_cameras=self.num_train_data, device="cpu"
+        # )
 
     @property
     def colors(self):
@@ -313,52 +340,19 @@ class LLGaussianSplattingModel(SplatfactoModel):
     @property
     def shs_rest(self):
         return self.features_rest
-
-    @property
-    def num_points(self):
-        return self.means.shape[0]
-
-    @property
-    def means(self):
-        return self.gauss_params["means"]
-
-    @property
-    def scales(self):
-        return self.gauss_params["scales"]
-
-    @property
-    def quats(self):
-        return self.gauss_params["quats"]
-
-    @property
-    def features_dc(self):
-        return self.gauss_params["features_dc"]
-
-    @property
-    def features_rest(self):
-        return self.gauss_params["features_rest"]
-
-    @property
-    def opacities(self):
-        return self.gauss_params["opacities"]
-
-    # @property
-    # def lerf(self):
-    #     return self.gauss_params["lerf"]
-
+    
     def load_state_dict(self, dict, **kwargs):  # type: ignore
         # resize the parameters to match the new number of points
         self.step = 30000
-        if "means" in dict:
-            # For backwards compatibility, we remap the names of parameters from
-            # means->gauss_params.means since old checkpoints have that format
-            for p in ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]:
-                dict[f"gauss_params.{p}"] = dict[p]
-        newp = dict["gauss_params.means"].shape[0]
-        for name, param in self.gauss_params.items():
-            old_shape = param.shape
-            new_shape = (newp,) + old_shape[1:]
-            self.gauss_params[name] = torch.nn.Parameter(torch.zeros(new_shape, device=self.device))
+        newp = dict["means"].shape[0]
+        self.means = torch.nn.Parameter(torch.zeros(newp, 3, device=self.device))
+        self.scales = torch.nn.Parameter(torch.zeros(newp, 3, device=self.device))
+        self.quats = torch.nn.Parameter(torch.zeros(newp, 4, device=self.device))
+        self.opacities = torch.nn.Parameter(torch.zeros(newp, 1, device=self.device))
+        self.features_dc = torch.nn.Parameter(torch.zeros(newp, 3, device=self.device))
+        self.features_rest = torch.nn.Parameter(
+            torch.zeros(newp, num_sh_bases(self.config.sh_degree) - 1, 3, device=self.device)
+        )
         super().load_state_dict(dict, **kwargs)
 
     def k_nearest_sklearn(self, x: torch.Tensor, k: int):
@@ -446,12 +440,12 @@ class LLGaussianSplattingModel(SplatfactoModel):
                     CONSOLE.log("use color only optimization with sigmoid activation")
                     shs[:, 0, :3] = torch.logit(colors, eps=1e-10)
 
-                self.gauss_params['means'] = torch.nn.Parameter(torch.cat([self.gauss_params['means'].detach(), deprojected], dim=0))
-                self.gauss_params['scales'] = torch.nn.Parameter(torch.cat([self.gauss_params['scales'].detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
-                self.gauss_params['quats'] = torch.nn.Parameter(torch.cat([self.gauss_params['quats'].detach(), random_quat_tensor(numpts).float().cuda()]))
-                self.gauss_params['features_dc'] = torch.nn.Parameter(torch.cat([self.gauss_params['features_dc'].detach(), shs[:, 0, :].to(self.device)]))
-                self.gauss_params['features_rest'] = torch.nn.Parameter(torch.cat([self.gauss_params['features_rest'].detach(), shs[:, 1:, :].to(self.device)]))
-                self.gauss_params['opacities'] = torch.nn.Parameter(torch.cat([self.gauss_params['opacities'].detach(), torch.logit(self.config.init_opacity * torch.ones(numpts, 1)).to(self.device)], dim=0))
+                self.means = torch.nn.Parameter(torch.cat([self.means.detach(), deprojected], dim=0))
+                self.scales = torch.nn.Parameter(torch.cat([self.scales.detach(), torch.log(avg_dist.repeat(1, 3)).float().cuda()], dim=0))
+                self.quats = torch.nn.Parameter(torch.cat([self.quats.detach(), random_quat_tensor(numpts).float().cuda()]))
+                self.features_dc = torch.nn.Parameter(torch.cat([self.features_dc.detach(), shs[:, 0, :].to(self.device)]))
+                self.features_rest = torch.nn.Parameter(torch.cat([self.features_rest.detach(), shs[:, 1:, :].to(self.device)]))
+                self.opacities = torch.nn.Parameter(torch.cat([self.opacities.detach(), torch.logit(self.config.init_opacity * torch.ones(numpts, 1)).to(self.device)], dim=0))
                 
 
                 self.xys_grad_norm = None
@@ -525,7 +519,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 continue
             self.remove_from_optim(optimizers.optimizers[group], deleted_mask, param)
         torch.cuda.empty_cache()
-
+        
     def dup_in_optim(self, optimizer, dup_mask, new_params, n=2):
         """adds the parameters to the optimizer"""
         param = optimizer.param_groups[0]["params"][0]
@@ -566,14 +560,25 @@ class LLGaussianSplattingModel(SplatfactoModel):
         with torch.no_grad():
             # keep track of a moving average of grad norms
             visible_mask = (self.radii > 0).flatten()
-            grads = self.xys.absgrad[0][visible_mask].norm(dim=-1)  # type: ignore
+            assert self.xys.grad is not None
+            grads = self.xys.grad.detach().norm(dim=-1)
             # print(f"grad norm min {grads.min().item()} max {grads.max().item()} mean {grads.mean().item()} size {grads.shape}")
             if self.xys_grad_norm is None:
-                self.xys_grad_norm = torch.zeros(self.num_points, device=self.device, dtype=torch.float32)
-                self.vis_counts = torch.ones(self.num_points, device=self.device, dtype=torch.float32)
-            assert self.vis_counts is not None
-            self.vis_counts[visible_mask] += 1
-            self.xys_grad_norm[visible_mask] += grads
+                self.xys_grad_norm = grads
+                self.vis_counts = torch.ones_like(self.xys_grad_norm)
+            else:
+                assert self.vis_counts is not None
+                self.vis_counts[visible_mask] = self.vis_counts[visible_mask] + 1
+                self.xys_grad_norm[visible_mask] = grads[visible_mask] + self.xys_grad_norm[visible_mask]
+
+            # update the max screen size, as a ratio of number of pixels
+            if self.max_2Dsize is None:
+                self.max_2Dsize = torch.zeros_like(self.radii, dtype=torch.float32)
+            newradii = self.radii.detach()[visible_mask]
+            self.max_2Dsize[visible_mask] = torch.maximum(
+                self.max_2Dsize[visible_mask],
+                newradii / float(max(self.last_size[0], self.last_size[1])),
+            )
 
     def set_crop(self, crop_box: Optional[OrientedBox]):
         self.crop_box = crop_box
@@ -599,21 +604,62 @@ class LLGaussianSplattingModel(SplatfactoModel):
             )
             if do_densification:
                 # then we densify
-                assert self.xys_grad_norm is not None and self.vis_counts is not None
+                assert self.xys_grad_norm is not None and self.vis_counts is not None and self.max_2Dsize is not None
                 avg_grad_norm = (self.xys_grad_norm / self.vis_counts) * 0.5 * max(self.last_size[0], self.last_size[1])
                 high_grads = (avg_grad_norm > self.config.densify_grad_thresh).squeeze()
                 splits = (self.scales.exp().max(dim=-1).values > self.config.densify_size_thresh).squeeze()
+                if self.step < self.config.stop_screen_size_at:
+                    splits |= (self.max_2Dsize > self.config.split_screen_size).squeeze()
                 splits &= high_grads
                 nsamps = self.config.n_split_samples
-                split_params = self.split_gaussians(splits, nsamps)
+                (
+                    split_means,
+                    split_features_dc,
+                    split_features_rest,
+                    split_opacities,
+                    split_scales,
+                    split_quats,
+                ) = self.split_gaussians(splits, nsamps)
 
                 dups = (self.scales.exp().max(dim=-1).values <= self.config.densify_size_thresh).squeeze()
                 dups &= high_grads
-                dup_params = self.dup_gaussians(dups)
-                for name, param in self.gauss_params.items():
-                    self.gauss_params[name] = torch.nn.Parameter(
-                        torch.cat([param.detach(), split_params[name], dup_params[name]], dim=0)
+                (
+                    dup_means,
+                    dup_features_dc,
+                    dup_features_rest,
+                    dup_opacities,
+                    dup_scales,
+                    dup_quats,
+                ) = self.dup_gaussians(dups)
+                self.means = Parameter(torch.cat([self.means.detach(), split_means, dup_means], dim=0))
+                self.features_dc = Parameter(
+                    torch.cat(
+                        [self.features_dc.detach(), split_features_dc, dup_features_dc],
+                        dim=0,
                     )
+                )
+                self.features_rest = Parameter(
+                    torch.cat(
+                        [
+                            self.features_rest.detach(),
+                            split_features_rest,
+                            dup_features_rest,
+                        ],
+                        dim=0,
+                    )
+                )
+                self.opacities = Parameter(torch.cat([self.opacities.detach(), split_opacities, dup_opacities], dim=0))
+                self.scales = Parameter(torch.cat([self.scales.detach(), split_scales, dup_scales], dim=0))
+                self.quats = Parameter(torch.cat([self.quats.detach(), split_quats, dup_quats], dim=0))
+                # append zeros to the max_2Dsize tensor
+                self.max_2Dsize = torch.cat(
+                    [
+                        self.max_2Dsize,
+                        torch.zeros_like(split_scales[:, 0]),
+                        torch.zeros_like(dup_scales[:, 0]),
+                    ],
+                    dim=0,
+                )
 
                 split_idcs = torch.where(splits)[0]
                 self.dup_in_all_optim(optimizers, split_idcs, nsamps)
@@ -632,6 +678,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                         ),
                     )
                 )
+                
                 if self.steps_since_add >= 5500 and self.postBA and self.steps_since_add < 10000:
                     deleted_mask = self.cull_gaussians(splits_mask)
             elif self.step >= self.config.stop_split_at and self.config.continue_cull_post_densification:
@@ -643,6 +690,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
             if deleted_mask is not None:
                 self.remove_from_all_optim(optimizers, deleted_mask)
+            # import pdb; pdb.set_trace()
 
             if self.step < self.config.stop_split_at and self.step % reset_interval == self.config.refine_every:
                 # Reset value is set to be twice of the cull_alpha_thresh
@@ -652,7 +700,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
                     max=torch.logit(torch.tensor(reset_value, device=self.device)).item(),
                 )
                 # reset the exp of optimizer
-                optim = optimizers.optimizers["opacities"]
+                optim = optimizers.optimizers["opacity"]
                 param = optim.param_groups[0]["params"][0]
                 param_state = optim.state[param]
                 param_state["exp_avg"] = torch.zeros_like(param_state["exp_avg"])
@@ -660,15 +708,19 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
             self.xys_grad_norm = None
             self.vis_counts = None
-
-    def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None):
+            self.max_2Dsize = None
+    
+    def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None, override_cull_alpha_thresh: Optional[float] = None):
         """
         This function deletes gaussians with under a certain opacity threshold
         extra_cull_mask: a mask indicates extra gaussians to cull besides existing culling criterion
         """
         n_bef = self.num_points
         # cull transparent ones
-        culls = (torch.sigmoid(self.opacities) < self.config.cull_alpha_thresh).squeeze()
+        if override_cull_alpha_thresh is not None:
+            culls = (torch.sigmoid(self.opacities) < override_cull_alpha_thresh).squeeze()
+        else:
+            culls = (torch.sigmoid(self.opacities) < self.config.cull_alpha_thresh).squeeze()
         below_alpha_count = torch.sum(culls).item()
         toobigs_count = 0
         if extra_cull_mask is not None:
@@ -676,10 +728,18 @@ class LLGaussianSplattingModel(SplatfactoModel):
         if self.step > self.config.refine_every * self.config.reset_alpha_every:
             # cull huge ones
             toobigs = (torch.exp(self.scales).max(dim=-1).values > self.config.cull_scale_thresh).squeeze()
+            if self.step < self.config.stop_screen_size_at:
+                # cull big screen space
+                assert self.max_2Dsize is not None
+                toobigs = toobigs | (self.max_2Dsize > self.config.cull_screen_size).squeeze()
             culls = culls | toobigs
             toobigs_count = torch.sum(toobigs).item()
-        for name, param in self.gauss_params.items():
-            self.gauss_params[name] = torch.nn.Parameter(param[~culls])
+        self.means = Parameter(self.means[~culls].detach())
+        self.scales = Parameter(self.scales[~culls].detach())
+        self.quats = Parameter(self.quats[~culls].detach())
+        self.features_dc = Parameter(self.features_dc[~culls].detach())
+        self.features_rest = Parameter(self.features_rest[~culls].detach())
+        self.opacities = Parameter(self.opacities[~culls].detach())
 
         CONSOLE.log(
             f"Culled {n_bef - self.num_points} gaussians "
@@ -692,6 +752,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
         """
         This function splits gaussians that are too large
         """
+
         n_splits = split_mask.sum().item()
         CONSOLE.log(f"Splitting {split_mask.sum().item()/self.num_points} gaussians: {n_splits}/{self.num_points}")
         centered_samples = torch.randn((samps * n_splits, 3), device=self.device)  # Nx3 of axis-aligned scales
@@ -713,29 +774,43 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self.scales[split_mask] = torch.log(torch.exp(self.scales[split_mask]) / size_fac)
         # step 5, sample new quats
         new_quats = self.quats[split_mask].repeat(samps, 1)
-        out = {
-            "means": new_means,
-            "features_dc": new_features_dc,
-            "features_rest": new_features_rest,
-            "opacities": new_opacities,
-            "scales": new_scales,
-            "quats": new_quats,
-        }
-        for name, param in self.gauss_params.items():
-            if name not in out:
-                out[name] = param[split_mask].repeat(samps, 1)
-        return out
-
+        return (
+            new_means,
+            new_features_dc,
+            new_features_rest,
+            new_opacities,
+            new_scales,
+            new_quats,
+        )
+    
     def dup_gaussians(self, dup_mask):
         """
         This function duplicates gaussians that are too small
         """
         n_dups = dup_mask.sum().item()
         CONSOLE.log(f"Duplicating {dup_mask.sum().item()/self.num_points} gaussians: {n_dups}/{self.num_points}")
-        new_dups = {}
-        for name, param in self.gauss_params.items():
-            new_dups[name] = param[dup_mask]
-        return new_dups
+        dup_means = self.means[dup_mask]
+        dup_features_dc = self.features_dc[dup_mask]
+        dup_features_rest = self.features_rest[dup_mask]
+        dup_opacities = self.opacities[dup_mask]
+        dup_scales = self.scales[dup_mask]
+        dup_quats = self.quats[dup_mask]
+        return (
+            dup_means,
+            dup_features_dc,
+            dup_features_rest,
+            dup_opacities,
+            dup_scales,
+            dup_quats,
+        )
+
+    @property
+    def num_points(self):
+        return self.means.shape[0]
+    
+    def step_cb(self, step):
+        self.step = step
+        self.steps_since_add += 1
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
@@ -766,19 +841,23 @@ class LLGaussianSplattingModel(SplatfactoModel):
         )
         return cbs
 
-    def step_cb(self, step):
-        self.step = step
-
     def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
-        # Here we explicitly use the means, scales as parameters so that the user can override this function and
-        # specify more if they want to add more optimizable params to gaussians.
-        gpg = {
-            name: [self.gauss_params[name]]
-            for name in ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]
+        return {
+            "xyz": [self.means],
+            "features_dc": [self.features_dc],
+            "features_rest": [self.features_rest],
+            "opacity": [self.opacities],
+            "scaling": [self.scales],
+            "rotation": [self.quats],
+            "lerf" : list(self.gaussian_lerf_field.parameters())
         }
-        gpg["lerf"] = list(self.gaussian_lerf_field.parameters())
-
-        return gpg
+    
+    def _get_downscale_factor(self):
+        # if self.training:
+        #     return 2 ** max((self.config.num_downscales - self.step // self.config.resolution_schedule), 0)
+        # else:
+        #     return 1
+        return 1
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         """Obtain the parameter groups for the optimizers
@@ -787,31 +866,81 @@ class LLGaussianSplattingModel(SplatfactoModel):
             Mapping of different parameter groups
         """
         gps = self.get_gaussian_param_groups()
-        self.camera_optimizer.get_param_groups(param_groups=gps)
+        gps["appearance_embed"] = list(self.appearance_nn.parameters()) + list(self.image_embeds.parameters())
         return gps
 
-    def _get_downscale_factor(self):
+    def project_gaussians(self, camera, downscale_factor=1):
+        if not isinstance(camera, Cameras):
+            print("Called get_outputs with not a camera")
+            return {}
+        assert camera.shape[0] == 1, "Only one camera at a time"
         # if self.training:
-        #     return 2 ** max(
-        #         (self.config.num_downscales - self.step // self.config.resolution_schedule),
-        #         0,
-        #     )
-        # else:
-        return 1
+            #currently relies on the branch vickie/camera-grads
+            # self.camera_optimizer.apply_to_camera(camera)
+        if self.crop_box is not None and not self.training:
+            crop_ids = self.crop_box.within(self.means).squeeze()
+            if crop_ids.sum() == 0:
+                return {"rgb": torch.full((camera.height.item(), camera.width.item(), 3), 0.5, device=self.device)}
+        else:
+            crop_ids = None
+        camera_downscale = downscale_factor
+        camera.rescale_output_resolution(1 / camera_downscale)
+        # shift the camera to center of scene looking at center
+        R = camera.camera_to_worlds[0, :3, :3]  # 3 x 3
+        T = camera.camera_to_worlds[0, :3, 3:4]  # 3 x 1
+        # flip the z axis to align with gsplat conventions
+        R_edit = torch.tensor(vtf.SO3.from_x_radians(np.pi).as_matrix(), device=R.device, dtype=R.dtype)
+        R = R @ R_edit
+        # analytic matrix inverse to get world2camera matrix
+        R_inv = R.T
+        T_inv = -R_inv @ T
+        viewmat = torch.eye(4, device=R.device, dtype=R.dtype)
+        viewmat[:3, :3] = R_inv
+        viewmat[:3, 3:4] = T_inv
+        # calculate the FOV of the camera given fx and fy, width and height
+        cx = camera.cx.item()
+        cy = camera.cy.item()
+        fovx = 2 * math.atan(camera.width / (2 * camera.fx))
+        fovy = 2 * math.atan(camera.height / (2 * camera.fy))
+        W, H = camera.width.item(), camera.height.item()
+        self.last_size = (H, W)
+        projmat = projection_matrix(0.001, 1000, fovx, fovy, device=self.device)
+        # BLOCK_X, BLOCK_Y = 16, 16
+        # tile_bounds = (
+        #     (W + BLOCK_X - 1) // BLOCK_X,
+        #     (H + BLOCK_Y - 1) // BLOCK_Y,
+        #     1,
+        # )
 
-    def _downscale_if_required(self, image):
-        d = self._get_downscale_factor()
-        if d > 1:
-            return resize_image(image, d)
-        return image
+        if crop_ids is not None:
+            means_crop = self.means[crop_ids]
+            scales_crop = self.scales[crop_ids]
+            quats_crop = self.quats[crop_ids]
+        else:
+            means_crop = self.means
+            scales_crop = self.scales
+            quats_crop = self.quats
+        BLOCK_WIDTH = 16
+        xys, depths, radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(
+            means_crop,
+            torch.exp(scales_crop),
+            1,
+            quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+            viewmat.squeeze()[:3, :],
+            projmat.squeeze() @ viewmat.squeeze(),
+            camera.fx.item(),
+            camera.fy.item(),
+            cx,
+            cy,
+            H,
+            W,
+            BLOCK_WIDTH,
+        )
 
-    @staticmethod
-    def get_empty_outputs(width: int, height: int, background: torch.Tensor) -> Dict[str, Union[torch.Tensor, List]]:
-        rgb = background.repeat(height, width, 1)
-        depth = background.new_ones(*rgb.shape[:2], 1) * 10
-        accumulation = background.new_zeros(*rgb.shape[:2], 1)
-        return {"rgb": rgb, "depth": depth, "accumulation": accumulation, "background": background}
-
+        # rescale the camera back to original dimensions
+        camera.rescale_output_resolution(camera_downscale)
+        return xys, depths, radii, conics, num_tiles_hit, cov3d, W, H
+    
     def get_outputs(self, camera: Cameras) -> Dict[str, Union[torch.Tensor, List]]:
         """Takes in a Ray Bundle and returns a dictionary of outputs.
 
@@ -825,14 +954,11 @@ class LLGaussianSplattingModel(SplatfactoModel):
         if not isinstance(camera, Cameras):
             print("Called get_outputs with not a camera")
             return {}
-
-        optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)[0, ...]
-
+        assert camera.shape[0] == 1, "Only one camera at a time"
+        outputs = {}
+        
         # get the background color
         if self.training:
-            assert camera.shape[0] == 1, "Only one camera at a time"
-            optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)
-
             if self.config.background_color == "random":
                 background = torch.rand(3, device=self.device)
             elif self.config.background_color == "white":
@@ -842,8 +968,6 @@ class LLGaussianSplattingModel(SplatfactoModel):
             else:
                 background = self.background_color.to(self.device)
         else:
-            optimized_camera_to_world = camera.camera_to_worlds
-
             if renderers.BACKGROUND_COLOR_OVERRIDE is not None:
                 background = renderers.BACKGROUND_COLOR_OVERRIDE.to(self.device)
             else:
@@ -852,13 +976,37 @@ class LLGaussianSplattingModel(SplatfactoModel):
         if self.crop_box is not None and not self.training:
             crop_ids = self.crop_box.within(self.means).squeeze()
             if crop_ids.sum() == 0:
-                return self.get_empty_outputs(int(camera.width.item()), int(camera.height.item()), background)
+                return {"rgb": background.repeat(int(camera.height.item()), int(camera.width.item()), 1)}
         else:
             crop_ids = None
-        camera_scale_fac = 1.0 / self._get_downscale_factor()
-        viewmat = get_viewmat(optimized_camera_to_world)
-        W, H = int(camera.width[0] * camera_scale_fac), int(camera.height[0] * camera_scale_fac)
+
+        camera_downscale = self._get_downscale_factor()
+
+        R = camera.camera_to_worlds[0, :3, :3]  # 3 x 3
+        T = camera.camera_to_worlds[0, :3, 3:4]  # 3 x 1
+        # flip the z and y axes to align with gsplat conventions
+        R_edit = torch.diag(torch.tensor([1, -1, -1], device=self.device, dtype=R.dtype))
+        R = R @ R_edit
+        # analytic matrix inverse to get world2camera matrix
+        R_inv = R.T
+        T_inv = -R_inv @ T
+        viewmat = torch.eye(4, device=R.device, dtype=R.dtype)
+        viewmat[:3, :3] = R_inv
+        viewmat[:3, 3:4] = T_inv
+        # calculate the FOV of the camera given fx and fy, width and height
+        cx = camera.cx.item()
+        cy = camera.cy.item()
+        fovx = 2 * math.atan(camera.width / (2 * camera.fx))
+        fovy = 2 * math.atan(camera.height / (2 * camera.fy))
+        W, H = int(camera.width.item()), int(camera.height.item())
         self.last_size = (H, W)
+        projmat = projection_matrix(0.001, 1000, fovx, fovy, device=self.device)
+        # BLOCK_X, BLOCK_Y = 16, 16
+        # tile_bounds = (
+        #     int((W + BLOCK_X - 1) // BLOCK_X),
+        #     int((H + BLOCK_Y - 1) // BLOCK_Y),
+        #     1,
+        # )
 
         if crop_ids is not None:
             opacities_crop = self.opacities[crop_ids]
@@ -876,59 +1024,235 @@ class LLGaussianSplattingModel(SplatfactoModel):
             quats_crop = self.quats
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
-        BLOCK_WIDTH = 16  # this controls the tile size of rasterization, 16 is a good default
-        K = camera.get_intrinsics_matrices().cuda()
-        K[:, :2, :] *= camera_scale_fac
-        # apply the compensation of screen space blurring to gaussians
-        if self.config.rasterize_mode not in ["antialiased", "classic"]:
-            raise ValueError("Unknown rasterize_mode: %s", self.config.rasterize_mode)
-
-        if self.config.output_depth_during_training or not self.training:
-            render_mode = "RGB+ED"
-        else:
-            render_mode = "RGB"
+        BLOCK_WIDTH = 16
+        self.xys, depths, self.radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
+            means_crop,
+            torch.exp(scales_crop),
+            1,
+            quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+            viewmat.squeeze()[:3, :],
+            projmat.squeeze() @ viewmat.squeeze(),
+            camera.fx.item(),
+            camera.fy.item(),
+            cx,
+            cy,
+            H,
+            W,
+            BLOCK_WIDTH,
+        )  # type: ignore
+        if (self.radii).sum() == 0:
+            return {"rgb": background.repeat(int(camera.height.item()), int(camera.width.item()), 1)}
+        # if self.num_points == 50:
+        #     import pdb; pdb.set_trace()
+        if self.training:
+            self.xys.retain_grad()
 
         if self.config.sh_degree > 0:
-            sh_degree_to_use = min(self.step // self.config.sh_degree_interval, self.config.sh_degree)
+            viewdirs = means_crop.detach() - camera.camera_to_worlds.detach()[..., :3, 3]  # (N, 3)
+            viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
+            n = min(self.step // self.config.sh_degree_interval, self.config.sh_degree)
+            rgbs = spherical_harmonics(n, viewdirs, colors_crop)
+            rgbs = torch.clamp(rgbs + 0.5, min=0.0)  # type: ignore
         else:
-            sh_degree_to_use = None
+            rgbs = torch.sigmoid(colors_crop[:, 0, :])
 
-        render, alpha, info = rasterization(
-            means=means_crop,
-            quats=quats_crop / quats_crop.norm(dim=-1, keepdim=True),
-            scales=torch.exp(scales_crop),
-            opacities=torch.sigmoid(opacities_crop).squeeze(-1),
-            colors=colors_crop,
-            viewmats=viewmat,  # [1, 4, 4]
-            Ks=K,  # [1, 3, 3]
-            width=W,
-            height=H,
-            tile_size=BLOCK_WIDTH,
-            packed=False,
-            near_plane=0.01,
-            far_plane=1e10,
-            render_mode=render_mode,
-            sh_degree=sh_degree_to_use,
-            sparse_grad=False,
-            absgrad=True,
-            rasterize_mode=self.config.rasterize_mode,
-            # set some threshold to disregrad small gaussians for faster rendering.
-            # radius_clip=3.0,
-        )
-        if self.training and info["means2d"].requires_grad:
-            info["means2d"].retain_grad()
-        self.xys = info["means2d"]  # [1, N, 2]
-        self.radii = info["radii"][0]  # [N]
+        # rescale the camera back to original dimensions
+        camera.rescale_output_resolution(camera_downscale)
+        assert (num_tiles_hit > 0).any()  # type: ignore
 
-        alpha = alpha[:, ...]
-        rgb = render[:, ..., :3] + (1 - alpha) * background
-        rgb = torch.clamp(rgb, 0.0, 1.0)
-        if render_mode == "RGB+ED":
-            depth_im = render[:, ..., 3:4]
-            depth_im = torch.where(alpha > 0, depth_im, depth_im.detach().max()).squeeze(0)
+        opacities = None
+        if self.config.rasterize_mode == "antialiased":
+            opacities = torch.sigmoid(opacities_crop) * comp[:, None]
+        elif self.config.rasterize_mode == "classic":
+            opacities = torch.sigmoid(opacities_crop)
         else:
-            depth_im = None
-        return {"rgb": rgb.squeeze(0), "depth": depth_im, "accumulation": alpha.squeeze(0), "background": background}  # type: ignore
+            raise ValueError("Unknown rasterize_mode: %s", self.config.rasterize_mode)
+
+        rgb, alpha = rasterize_gaussians(  # type: ignore            
+            self.xys,
+            depths,
+            self.radii,
+            conics,
+            num_tiles_hit,  # type: ignore
+            rgbs,
+            opacities,
+            H,
+            W,
+            BLOCK_WIDTH,
+            background=background,
+            return_alpha=True,
+        )  # type: ignore
+        alpha = alpha[..., None]
+        if camera.metadata is not None and "cam_idx" in camera.metadata:
+            cam_id = camera.metadata["cam_idx"]
+            embeds = self.image_embeds(torch.tensor(cam_id, device=self.device))
+            affine_shift = self.appearance_nn(embeds)
+            rgb = rgb * (1 + affine_shift[:3]) + affine_shift[3:]
+        rgb = torch.clamp(rgb, max=1.0)  # type: ignore
+        
+        outputs["rgb"] = rgb
+        outputs["accumulation"] = alpha
+        
+        depth_im = None
+        depth_im = rasterize_gaussians(  # type: ignore
+                self.xys,
+                depths,
+                self.radii,
+                conics,
+                num_tiles_hit,  # type: ignore
+                depths[:, None].repeat(1, 3),
+                opacities,
+                H,
+                W,
+                BLOCK_WIDTH,
+                background=torch.ones(3, device=self.device),
+            )[..., 0:1]  # type: ignore
+        depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
+        outputs["depth"] = depth_im
+
+        # with torch.no_grad():
+        #     depth_xys, depth_depths, depth_radii, depth_conics, depth_num_tiles_hit, depth_cov3d = project_gaussians(  # type: ignore
+        #         means_crop,
+        #         torch.exp(scales_crop),
+        #         1,
+        #         quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+        #         viewmat.squeeze()[:3, :],
+        #         projmat.squeeze() @ viewmat.squeeze(),
+        #         camera.fx.item(),
+        #         camera.fy.item(),
+        #         cx//2,
+        #         cy//2,
+        #         H//2,
+        #         W//2,
+        #         BLOCK_WIDTH,
+        #     ) 
+        #     depth_im = rasterize_gaussians(  # type: ignore
+        #         depth_xys,
+        #         depth_depths,
+        #         depth_radii,
+        #         depth_conics,
+        #         depth_num_tiles_hit,  # type: ignore
+        #         depths[:, None].repeat(1, 3),
+        #         torch.sigmoid(opacities_crop),
+        #         H//2,
+        #         W//2,
+        #         background=torch.ones(3, device=self.device),
+        #     )[..., 0:1]  # type: ignore
+        #     # alpha.resize_(H//2, W//2, 1)
+        #     # depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
+        #     outputs["depth_half"] = depth_im
+        
+        if self.datamanager.use_clip:
+            # import pdb; pdb.set_trace()
+            if self.step - self.datamanager.lerf_step > 500:
+                if camera.metadata is not None:
+                    if "clip_downscale_factor" not in camera.metadata:
+                        return outputs
+                ########################
+                # CLIP Relevancy Field #
+                ########################
+                reset_interval = self.config.reset_alpha_every * self.config.refine_every
+                if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
+
+                    with torch.no_grad():
+                        clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
+
+                        self.random_pixels = self.datamanager.random_pixels.to(self.device)
+
+                    clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
+                    clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
+
+                    clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+
+                    field_output = rasterize_gaussians(
+                        clip_xys.detach(),
+                        clip_depths.detach(),
+                        clip_radii.detach(),
+                        clip_conics.detach(),
+                        clip_num_tiles_hit,
+                        # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
+                        # clip_hash_encoding[self.dropout_mask],
+                        clip_hash_encoding,
+                        torch.sigmoid(opacities_crop.detach().clone()),
+                        clip_H,
+                        clip_W,
+                        BLOCK_WIDTH,
+                        torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                    )
+
+                    field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
+
+                    clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+
+                    outputs["clip"] = clip_output
+                    outputs["clip_scale"] = clip_scale
+
+                if not self.training:
+                    # N x B x 1; N
+                    max_across, self.best_scales = self.get_max_across(
+                        self.xys,
+                        depths,
+                        self.radii,
+                        conics,
+                        num_tiles_hit,
+                        torch.sigmoid(self.opacities[crop_ids]),
+                        H,
+                        W,
+                    )
+
+                    for i in range(len(self.image_encoder.positives)):
+                        max_across[i][max_across[i] < self.relevancy_thresh.value] = 0
+                        # relevancy_rasterized[relevancy_rasterized < 0.5] = 0
+                        outputs[f"relevancy_{i}"] = max_across[i].view(H, W, -1)
+                        # outputs[f"relevancy_rasterized_{i}"] = relevancy_rasterized.view(H, W, -1)
+                        # outputs[f"best_scales_{i}"] = best_scales[i]
+                
+        return outputs
+    
+    def depth_ranking_loss(
+        self,
+        rendered_depth: Float[Tensor, "*batch H W"],
+        gt_depth: Float[Tensor, "*batch H W"],
+        mask: Float[Tensor, "*batch H W"],
+        patch_size: int = 128,
+        num_patches: int = 8,
+        epsilon: float = 1e-6,
+        ) -> Float[Tensor, "*batch"]:
+        """
+        Depth ranking loss as described in the SparseGS paper.
+        Args:
+            rendered_depth: rendered depth image
+            gt_depth: ground truth depth image
+            mask: mask for the depth images. 1 where valid, 0 where invalid
+            patch_size: patch size
+            num_patches: number of patches to sample
+            epsilon: small value to avoid division by zero
+        """
+        # import pdb; pdb.set_trace()
+        b, h, w = rendered_depth.shape
+        # construct patch indices
+        sh = torch.randint(0, h - patch_size, (b, num_patches, patch_size, patch_size))
+        sw = torch.randint(0, w - patch_size, (b, num_patches, patch_size, patch_size))
+        idx_batch = torch.arange(b)[:, None, None, None].repeat(1, num_patches, patch_size, patch_size)
+        idx_rows = torch.arange(patch_size)[None, None, None, :].repeat(b, 1, 1, 1) + sh
+        idx_cols = torch.arange(patch_size)[None, None, None, :].repeat(b, 1, 1, 1) + sw
+        # index into and mask out patches
+        mask_patches = mask[idx_batch, idx_rows, idx_cols]
+        rendered_depth_patches = rendered_depth[idx_batch, idx_rows, idx_cols] * mask_patches
+        gt_depth_patches = gt_depth[idx_batch, idx_rows, idx_cols] * mask_patches
+        # calculate correlation
+        e_xy = torch.mean(rendered_depth_patches * gt_depth_patches, dim=[-1, -2])
+        e_x = torch.mean(rendered_depth_patches, dim=[-1, -2])
+        e_y = torch.mean(gt_depth_patches, dim=[-1, -2])
+        e_x2 = torch.mean(torch.square(rendered_depth_patches), dim=[-1, -2])
+        ex_2 = e_x**2
+        e_y2 = torch.mean(torch.square(gt_depth_patches), dim=[-1, -2])
+        ey_2 = e_y**2
+        corr = (e_xy - e_x * e_y) / (torch.sqrt((e_y2 - ey_2) * (e_x2 - ex_2)) + epsilon)
+        corr = torch.clamp(corr, min=-1, max=1)
+        # calculate loss
+        loss = torch.mean(1 - corr, dim=-1)
+        return loss
 
     def get_gt_img(self, image: torch.Tensor):
         """Compute groundtruth image with iteration dependent downscale factor for evaluation purpose
@@ -938,21 +1262,17 @@ class LLGaussianSplattingModel(SplatfactoModel):
         """
         if image.dtype == torch.uint8:
             image = image.float() / 255.0
-        gt_img = self._downscale_if_required(image)
-        return gt_img.to(self.device)
+        d = self._get_downscale_factor()
+        if d > 1:
+            newsize = [image.shape[0] // d, image.shape[1] // d]
 
-    def composite_with_background(self, image, background) -> torch.Tensor:
-        """Composite the ground truth image with a background color when it has an alpha channel.
+            # torchvision can be slow to import, so we do it lazily.
+            import torchvision.transforms.functional as TF
 
-        Args:
-            image: the image to composite
-            background: the background color
-        """
-        if image.shape[2] == 4:
-            alpha = image[..., -1].unsqueeze(-1).repeat((1, 1, 3))
-            return alpha * image[..., :3] + (1 - alpha) * background
+            gt_img = TF.resize(image.permute(2, 0, 1), newsize, antialias=None).permute(1, 2, 0)
         else:
-            return image
+            gt_img = image
+        return gt_img.to(self.device)
 
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
@@ -961,16 +1281,15 @@ class LLGaussianSplattingModel(SplatfactoModel):
             outputs: the output to compute loss dict to
             batch: ground truth batch corresponding to outputs
         """
-        gt_rgb = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
+        gt_rgb = self.get_gt_img(batch["image"])
         metrics_dict = {}
         predicted_rgb = outputs["rgb"]
-        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
 
         metrics_dict["gaussian_count"] = self.num_points
-
-        self.camera_optimizer.get_metrics_dict(metrics_dict)
         return metrics_dict
 
+    # @profile
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         """Computes and returns the losses dict.
 
@@ -979,21 +1298,59 @@ class LLGaussianSplattingModel(SplatfactoModel):
             batch: ground truth batch corresponding to outputs
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
-        gt_img = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
+        loss_dict = {}
+        gt_img = self.get_gt_img(batch["image"])
         pred_img = outputs["rgb"]
 
         # Set masked part of both ground-truth and rendered image to black.
         # This is a little bit sketchy for the SSIM loss.
         if "mask" in batch:
             # batch["mask"] : [H, W, 1]
-            mask = self._downscale_if_required(batch["mask"])
-            mask = mask.to(self.device)
-            assert mask.shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
+            assert batch["mask"].shape[:2] == gt_img.shape[:2] == pred_img.shape[:2]
+            mask = batch["mask"].to(self.device)
             gt_img = gt_img * mask
             pred_img = pred_img * mask
 
         Ll1 = torch.abs(gt_img - pred_img).mean()
         simloss = 1 - self.ssim(gt_img.permute(2, 0, 1)[None, ...], pred_img.permute(2, 0, 1)[None, ...])
+        loss_dict["main_loss"] = (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss
+
+        # if "depth_half" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 1100:
+            
+        #     assert outputs["depth_half"].shape == batch["depth"].shape
+        #     gt_depth = batch["depth"].permute(2, 0, 1)
+        #     pred_depth = outputs["depth_half"].permute(2, 0, 1)
+        #     mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
+        #     mask = mask.permute(2, 0, 1)
+        #     # import pdb; pdb.set_trace()
+        #     assert pred_depth.shape == gt_depth.shape == mask.shape
+        #     # import matplotlib.pyplot as plt
+        #     # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy())
+        #     # plt.savefig("depth_gt.png")
+        #     # plt.imshow(outputs["depth_half"].squeeze(-1).detach().cpu().numpy())
+        #     # plt.savefig("depth_pred.png")
+        #     # plt.imshow(mask.squeeze(0).cpu().numpy())
+        #     # plt.savefig("depth_mask.png")
+        #     # plt.imshow(batch["depth"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
+        #     # plt.savefig("depth_gt_masked.png")
+        #     # plt.imshow(outputs["depth_half"].squeeze(-1).cpu().numpy() * mask.squeeze(0).cpu().numpy())
+        #     # plt.savefig("depth_pred_masked.png")
+        #     # plt.imshow(outputs["depth"].squeeze(-1).detach().cpu().numpy())
+        #     # plt.savefig("depth_pred_full.png")
+        #     # import pdb; pdb.set_trace()
+        #     depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
+        #     loss_dict["depth_loss"] = depth_correlation_loss
+        # if "depth" in outputs.keys() and "depth" in batch.keys() and self.steps_since_add > 2000:
+        #     assert outputs["depth"].shape == batch["depth"].shape
+        #     gt_depth = batch["depth"].permute(2, 0, 1)
+        #     pred_depth = outputs["depth"].permute(2, 0, 1)
+        #     mask = (batch["depth"] < batch["depth"].mean() * 1.5) & (batch["depth"] > 0)
+        #     mask = mask.permute(2, 0, 1)
+        #     # import pdb; pdb.set_trace()
+        #     assert pred_depth.shape == gt_depth.shape == mask.shape
+        #     depth_correlation_loss = self.depth_ranking_loss(pred_depth, gt_depth, mask)
+        #     loss_dict["depth_loss"] = depth_correlation_loss
+
         if self.config.use_scale_regularization and self.step % 10 == 0:
             scale_exp = torch.exp(self.scales)
             scale_reg = (
@@ -1006,16 +1363,18 @@ class LLGaussianSplattingModel(SplatfactoModel):
             scale_reg = 0.1 * scale_reg.mean()
         else:
             scale_reg = torch.tensor(0.0).to(self.device)
+        loss_dict["scale_reg"] = scale_reg
 
-        loss_dict = {
-            "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss,
-            "scale_reg": scale_reg,
-        }
-
-        if self.training:
-            # Add loss from camera optimizer
-            self.camera_optimizer.get_loss_dict(loss_dict)
-
+        if self.training and 'clip' in outputs and 'clip' in batch: 
+            unreduced_clip = self.config.clip_loss_weight * torch.nn.functional.huber_loss(
+                outputs["clip"], batch["clip"].to(self.device).to(torch.float32), delta=1.25, reduction="none"
+            )
+            loss_dict["clip_loss"] = unreduced_clip.sum(dim=-1).nanmean()
+        
+        psnr = self.psnr(gt_img, pred_img)
+        # print(f"PSNR: {psnr.item()}")
+        # print(f"PSNR: {psnr.item()}")
+        
         return loss_dict
 
     @torch.no_grad()
@@ -1045,8 +1404,16 @@ class LLGaussianSplattingModel(SplatfactoModel):
         Returns:
             A dictionary of metrics.
         """
-        gt_rgb = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
-        predicted_rgb = outputs["rgb"]
+        gt_rgb = self.get_gt_img(batch["image"])
+        d = self._get_downscale_factor()
+        if d > 1:
+            # torchvision can be slow to import, so we do it lazily.
+            import torchvision.transforms.functional as TF
+
+            newsize = [batch["image"].shape[0] // d, batch["image"].shape[1] // d]
+            predicted_rgb = TF.resize(outputs["rgb"].permute(2, 0, 1), newsize, antialias=None).permute(1, 2, 0)
+        else:
+            predicted_rgb = outputs["rgb"]
 
         combined_rgb = torch.cat([gt_rgb, predicted_rgb], dim=1)
 
@@ -1060,14 +1427,33 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
+        print(f"PSNR: {psnr.item()}, SSIM: {ssim}, LPIPS: {lpips}")
         metrics_dict["lpips"] = float(lpips)
 
         images_dict = {"img": combined_rgb}
 
         return metrics_dict, images_dict
+
+    def k_nearest_sklearn(self, x: torch.Tensor, k: int, include_self: bool = False):
+        """
+        Find k-nearest neighbors using sklearn's NearestNeighbors.
+        x: The data tensor of shape [num_samples, num_features]
+        k: The number of neighbors to retrieve
+        """
+        # Convert tensor to numpy array
+        x_np = x.cpu().numpy()
+
+        # Build the nearest neighbors model
+        nn_model = NearestNeighbors(n_neighbors=k + 1, algorithm="auto", metric="euclidean").fit(x_np)
+
+        # Find the k-nearest neighbors
+        distances, indices = nn_model.kneighbors(x_np)
+
+        if include_self:
+            return distances.astype(np.float32), indices
+        else:
+            return distances[:, 1:].astype(np.float32), indices[:, 1:].astype(np.float32)
     
-
-
     def localize_query_cb(self,element):
         with torch.no_grad():
             # clip_feats = self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1,keepdim=True), self.crop_scale.value * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
@@ -1207,66 +1593,66 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self._crop_center_init = None
         self._crop_handle.visible = False
         
-    # def get_max_across(self, xys, depths, radii, conics, num_tiles_hit, opacities, h, w, preset_scales=None):
-    #     # probably not a good idea bc it's prob going to be a lot of memory
-    #     n_phrases = len(self.image_encoder.positives)
-    #     n_phrases_maxs = [None for _ in range(n_phrases)]
-    #     n_phrases_sims = [None for _ in range(n_phrases)]
-    #     scales_list = torch.linspace(0.0, 1.5, 30).to(self.device)
-    #     # scales_list = [0.1]
-    #     all_probs = []
-    #     BLOCK_WIDTH = 16
+    def get_max_across(self, xys, depths, radii, conics, num_tiles_hit, opacities, h, w, preset_scales=None):
+        # probably not a good idea bc it's prob going to be a lot of memory
+        n_phrases = len(self.image_encoder.positives)
+        n_phrases_maxs = [None for _ in range(n_phrases)]
+        n_phrases_sims = [None for _ in range(n_phrases)]
+        scales_list = torch.linspace(0.0, 1.5, 30).to(self.device)
+        # scales_list = [0.1]
+        all_probs = []
+        BLOCK_WIDTH = 16
 
-    #     with torch.no_grad():
-    #         clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
-    #         # print(type(clip_hash_encoding))
-    #         # print(clip_hash_encoding.ndimension())
-    #         # print(clip_hash_encoding.size(1))
-    #         # import pdb; pdb.set_trace()
-    #         clip_output = rasterize_gaussians(
-    #                         xys,
-    #                         depths,
-    #                         radii,
-    #                         conics,
-    #                         num_tiles_hit,
-    #                         # self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32),
-    #                         # self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True),
-    #                         # clip_hash_encoding / clip_hash_encoding.norm(dim=-1, keepdim=True),
-    #                         clip_hash_encoding,
-    #                         opacities,
-    #                         h,
-    #                         w,
-    #                         BLOCK_WIDTH,
-    #                         # torch.zeros(self.image_encoder.embedding_dim, device=self.device),
-    #                         torch.zeros(clip_hash_encoding.shape[1], device=self.device),
-    #                     )
-    #         # Normalize the clip output
-    #         # clip_output = clip_output / (clip_output.norm(dim=-1, keepdim=True) + 1e-6)
-    #     for i, scale in enumerate(scales_list):
-    #         with torch.no_grad():
-    #             clip_output_im = self.gaussian_lerf_field.get_outputs_from_feature(clip_output.view(h*w, -1), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32).view(h, w, -1)
+        with torch.no_grad():
+            clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+            # print(type(clip_hash_encoding))
+            # print(clip_hash_encoding.ndimension())
+            # print(clip_hash_encoding.size(1))
+            # import pdb; pdb.set_trace()
+            clip_output = rasterize_gaussians(
+                            xys,
+                            depths,
+                            radii,
+                            conics,
+                            num_tiles_hit,
+                            # self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32),
+                            # self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True),
+                            # clip_hash_encoding / clip_hash_encoding.norm(dim=-1, keepdim=True),
+                            clip_hash_encoding,
+                            opacities,
+                            h,
+                            w,
+                            BLOCK_WIDTH,
+                            # torch.zeros(self.image_encoder.embedding_dim, device=self.device),
+                            torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                        )
+            # Normalize the clip output
+            # clip_output = clip_output / (clip_output.norm(dim=-1, keepdim=True) + 1e-6)
+        for i, scale in enumerate(scales_list):
+            with torch.no_grad():
+                clip_output_im = self.gaussian_lerf_field.get_outputs_from_feature(clip_output.view(h*w, -1), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32).view(h, w, -1)
 
-    #         for j in range(n_phrases):
-    #             if preset_scales is None or j == i:
-    #                 # relevancy_rasterized = NDRasterizeGaussians.apply(
-    #                 #         xys,
-    #                 #         depths,
-    #                 #         radii,
-    #                 #         conics,
-    #                 #         num_tiles_hit,
-    #                 #         self.image_encoder.get_relevancy(self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32), j)[..., 0:1],
-    #                 #         opacities,
-    #                 #         h,
-    #                 #         w,
-    #                 #         torch.zeros(1, device=self.device),
-    #                 #     )
+            for j in range(n_phrases):
+                if preset_scales is None or j == i:
+                    # relevancy_rasterized = NDRasterizeGaussians.apply(
+                    #         xys,
+                    #         depths,
+                    #         radii,
+                    #         conics,
+                    #         num_tiles_hit,
+                    #         self.image_encoder.get_relevancy(self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32), j)[..., 0:1],
+                    #         opacities,
+                    #         h,
+                    #         w,
+                    #         torch.zeros(1, device=self.device),
+                    #     )
                     
-    #                 probs = self.image_encoder.get_relevancy(clip_output_im.view(-1, self.image_encoder.embedding_dim), j)
-    #                 pos_prob = probs[..., 0:1]
-    #                 all_probs.append((pos_prob.max(), scale))
-    #                 if n_phrases_maxs[j] is None or pos_prob.max() > n_phrases_sims[j].max():
-    #                     n_phrases_maxs[j] = scale
-    #                     n_phrases_sims[j] = pos_prob
-    #     # print(f"Best scales: {n_phrases_maxs}")#, Words: {self.image_encoder.positives}, Scale List: {scales_list}, All probs: {all_probs}")
-    #     # import pdb; pdb.set_trace()
-    #     return torch.stack(n_phrases_sims), torch.Tensor(n_phrases_maxs)#, relevancy_rasterized
+                    probs = self.image_encoder.get_relevancy(clip_output_im.view(-1, self.image_encoder.embedding_dim), j)
+                    pos_prob = probs[..., 0:1]
+                    all_probs.append((pos_prob.max(), scale))
+                    if n_phrases_maxs[j] is None or pos_prob.max() > n_phrases_sims[j].max():
+                        n_phrases_maxs[j] = scale
+                        n_phrases_sims[j] = pos_prob
+        # print(f"Best scales: {n_phrases_maxs}")#, Words: {self.image_encoder.positives}, Scale List: {scales_list}, All probs: {all_probs}")
+        # import pdb; pdb.set_trace()
+        return torch.stack(n_phrases_sims), torch.Tensor(n_phrases_maxs)#, relevancy_rasterized

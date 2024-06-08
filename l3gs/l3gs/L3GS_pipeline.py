@@ -42,7 +42,8 @@ from torchvision.transforms.functional import resize
 from nerfstudio.configs.base_config import InstantiateConfig
 # from lerf.utils.camera_utils import deproject_pixel, get_connected_components, calculate_overlap, non_maximum_suppression
 from l3gs.encoders.image_encoder import BaseImageEncoderConfig, BaseImageEncoder
-from gsplat.sh import spherical_harmonics, num_sh_bases
+# from gsplat.sh import spherical_harmonics, num_sh_bases
+# from gsplat.cuda_legacy._wrapper import num_sh_bases
 from l3gs.data.scene_box import SceneBox, OrientedBox
 
 import l3gs.query_diff_utils as query_diff_utils
