@@ -183,7 +183,7 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """threshold of ratio of gaussian max to min scale before applying regularization
     loss from the PhysGaussian paper
     """
-    output_depth_during_training: bool = False
+    output_depth_during_training: bool = True
     """If True, output depth during training. Otherwise, only output depth during evaluation."""
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     """
@@ -826,6 +826,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
             print("Called get_outputs with not a camera")
             return {}
 
+        outputs = {}
         optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)[0, ...]
 
         # get the background color
@@ -923,13 +924,107 @@ class LLGaussianSplattingModel(SplatfactoModel):
         alpha = alpha[:, ...]
         rgb = render[:, ..., :3] + (1 - alpha) * background
         rgb = torch.clamp(rgb, 0.0, 1.0)
+        outputs["rgb"] = rgb.squeeze(0)
         if render_mode == "RGB+ED":
             depth_im = render[:, ..., 3:4]
             depth_im = torch.where(alpha > 0, depth_im, depth_im.detach().max()).squeeze(0)
         else:
             depth_im = None
-        return {"rgb": rgb.squeeze(0), "depth": depth_im, "accumulation": alpha.squeeze(0), "background": background}  # type: ignore
+        outputs["depth"] = depth_im
+        outputs["accumulation"] = alpha.squeeze(0)
+        outputs["background"] = background
 
+        if self.datamanager.use_clip:
+            if self.step - self.datamanager.lerf_step > 500:
+                if camera.metadata is not None:
+                    if "clip_downscale_factor" not in camera.metadata:
+                        return {"rgb": rgb.squeeze(0), "depth": depth_im, "accumulation": alpha.squeeze(0), "background": background}
+                ########################
+                # CLIP Relevancy Field #
+                ########################
+                reset_interval = self.config.reset_alpha_every * self.config.refine_every
+                if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
+                    # with torch.no_grad():
+                    clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+                    downscale_factor = camera.metadata["clip_downscale_factor"]
+                    clip_H, clip_W = int(H / downscale_factor), int(W / downscale_factor)
+                    clipK = K.clone()
+                    clipK[:, :2, :] *= (1 / downscale_factor)
+                    field_output, alpha, info = rasterization(
+                        means=means_crop,
+                        quats=quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+                        scales=torch.exp(scales_crop),
+                        opacities=torch.sigmoid(opacities_crop).squeeze(-1),
+                        colors=clip_hash_encoding,
+                        viewmats=viewmat,  # [1, 4, 4]
+                        Ks=clipK,  # [1, 3, 3]
+                        width=clip_W,
+                        height=clip_H,
+                        tile_size=BLOCK_WIDTH,
+                        packed=False,
+                        near_plane=0.01,
+                        far_plane=1e10,
+                        render_mode="RGB",
+                        sparse_grad=False,
+                        absgrad=True,
+                        rasterize_mode=self.config.rasterize_mode,
+                        # set some threshold to disregrad small gaussians for faster rendering.
+                        # radius_clip=3.0,
+                    )
+                    
+                    # clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
+
+                    self.random_pixels = self.datamanager.random_pixels.to(self.device)
+
+                    clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
+                    clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
+
+
+                    # field_output = rasterize_gaussians(
+                    #     clip_xys.detach(),
+                    #     clip_depths.detach(),
+                    #     clip_radii.detach(),
+                    #     clip_conics.detach(),
+                    #     clip_num_tiles_hit,
+                    #     # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
+                    #     # clip_hash_encoding[self.dropout_mask],
+                    #     clip_hash_encoding,
+                    #     torch.sigmoid(opacities_crop.detach().clone()),
+                    #     clip_H,
+                    #     clip_W,
+                    #     BLOCK_WIDTH,
+                    #     torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                    # )
+
+                    field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
+
+                    clip_output = field_output[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32)
+
+                    outputs["clip"] = clip_output
+                    outputs["clip_scale"] = clip_scale
+
+                if not self.training:
+                    # N x B x 1; N
+                    max_across, self.best_scales = self.get_max_across(
+                        self.xys,
+                        depths,
+                        self.radii,
+                        conics,
+                        num_tiles_hit,
+                        torch.sigmoid(self.opacities[crop_ids]),
+                        H,
+                        W,
+                    )
+
+                    for i in range(len(self.image_encoder.positives)):
+                        max_across[i][max_across[i] < self.relevancy_thresh.value] = 0
+                        # relevancy_rasterized[relevancy_rasterized < 0.5] = 0
+                        outputs[f"relevancy_{i}"] = max_across[i].view(H, W, -1)
+                        outputs[f"relevancy_rasterized_{i}"] = relevancy_rasterized.view(H, W, -1)
+                        outputs[f"best_scales_{i}"] = best_scales[i]
+                
+        # return {"rgb": rgb.squeeze(0), "depth": depth_im, "accumulation": alpha.squeeze(0), "background": background, "clip": clip_im, "clip_scale": clip}  # type: ignore
+        return outputs
     def get_gt_img(self, image: torch.Tensor):
         """Compute groundtruth image with iteration dependent downscale factor for evaluation purpose
 
@@ -1207,66 +1302,66 @@ class LLGaussianSplattingModel(SplatfactoModel):
         self._crop_center_init = None
         self._crop_handle.visible = False
         
-    # def get_max_across(self, xys, depths, radii, conics, num_tiles_hit, opacities, h, w, preset_scales=None):
-    #     # probably not a good idea bc it's prob going to be a lot of memory
-    #     n_phrases = len(self.image_encoder.positives)
-    #     n_phrases_maxs = [None for _ in range(n_phrases)]
-    #     n_phrases_sims = [None for _ in range(n_phrases)]
-    #     scales_list = torch.linspace(0.0, 1.5, 30).to(self.device)
-    #     # scales_list = [0.1]
-    #     all_probs = []
-    #     BLOCK_WIDTH = 16
+    def get_max_across(self, xys, depths, radii, conics, num_tiles_hit, opacities, h, w, preset_scales=None):
+        # probably not a good idea bc it's prob going to be a lot of memory
+        n_phrases = len(self.image_encoder.positives)
+        n_phrases_maxs = [None for _ in range(n_phrases)]
+        n_phrases_sims = [None for _ in range(n_phrases)]
+        scales_list = torch.linspace(0.0, 1.5, 30).to(self.device)
+        # scales_list = [0.1]
+        all_probs = []
+        BLOCK_WIDTH = 16
 
-    #     with torch.no_grad():
-    #         clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
-    #         # print(type(clip_hash_encoding))
-    #         # print(clip_hash_encoding.ndimension())
-    #         # print(clip_hash_encoding.size(1))
-    #         # import pdb; pdb.set_trace()
-    #         clip_output = rasterize_gaussians(
-    #                         xys,
-    #                         depths,
-    #                         radii,
-    #                         conics,
-    #                         num_tiles_hit,
-    #                         # self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32),
-    #                         # self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True),
-    #                         # clip_hash_encoding / clip_hash_encoding.norm(dim=-1, keepdim=True),
-    #                         clip_hash_encoding,
-    #                         opacities,
-    #                         h,
-    #                         w,
-    #                         BLOCK_WIDTH,
-    #                         # torch.zeros(self.image_encoder.embedding_dim, device=self.device),
-    #                         torch.zeros(clip_hash_encoding.shape[1], device=self.device),
-    #                     )
-    #         # Normalize the clip output
-    #         # clip_output = clip_output / (clip_output.norm(dim=-1, keepdim=True) + 1e-6)
-    #     for i, scale in enumerate(scales_list):
-    #         with torch.no_grad():
-    #             clip_output_im = self.gaussian_lerf_field.get_outputs_from_feature(clip_output.view(h*w, -1), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32).view(h, w, -1)
+        with torch.no_grad():
+            clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
+            # print(type(clip_hash_encoding))
+            # print(clip_hash_encoding.ndimension())
+            # print(clip_hash_encoding.size(1))
+            # import pdb; pdb.set_trace()
+            clip_output = rasterize_gaussians(
+                            xys,
+                            depths,
+                            radii,
+                            conics,
+                            num_tiles_hit,
+                            # self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32),
+                            # self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True),
+                            # clip_hash_encoding / clip_hash_encoding.norm(dim=-1, keepdim=True),
+                            clip_hash_encoding,
+                            opacities,
+                            h,
+                            w,
+                            BLOCK_WIDTH,
+                            # torch.zeros(self.image_encoder.embedding_dim, device=self.device),
+                            torch.zeros(clip_hash_encoding.shape[1], device=self.device),
+                        )
+            # Normalize the clip output
+            # clip_output = clip_output / (clip_output.norm(dim=-1, keepdim=True) + 1e-6)
+        for i, scale in enumerate(scales_list):
+            with torch.no_grad():
+                clip_output_im = self.gaussian_lerf_field.get_outputs_from_feature(clip_output.view(h*w, -1), scale * torch.ones(h*w, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].to(dtype=torch.float32).view(h, w, -1)
 
-    #         for j in range(n_phrases):
-    #             if preset_scales is None or j == i:
-    #                 # relevancy_rasterized = NDRasterizeGaussians.apply(
-    #                 #         xys,
-    #                 #         depths,
-    #                 #         radii,
-    #                 #         conics,
-    #                 #         num_tiles_hit,
-    #                 #         self.image_encoder.get_relevancy(self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32), j)[..., 0:1],
-    #                 #         opacities,
-    #                 #         h,
-    #                 #         w,
-    #                 #         torch.zeros(1, device=self.device),
-    #                 #     )
+            for j in range(n_phrases):
+                if preset_scales is None or j == i:
+                    # relevancy_rasterized = NDRasterizeGaussians.apply(
+                    #         xys,
+                    #         depths,
+                    #         radii,
+                    #         conics,
+                    #         num_tiles_hit,
+                    #         self.image_encoder.get_relevancy(self.gaussian_lerf_field.get_outputs_from_feature(self.clip_hash / self.clip_hash.norm(dim=-1, keepdim=True), scale * torch.ones(self.num_points, 1, device=self.device))[GaussianLERFFieldHeadNames.CLIP].view(self.num_points, -1).to(dtype=torch.float32), j)[..., 0:1],
+                    #         opacities,
+                    #         h,
+                    #         w,
+                    #         torch.zeros(1, device=self.device),
+                    #     )
                     
-    #                 probs = self.image_encoder.get_relevancy(clip_output_im.view(-1, self.image_encoder.embedding_dim), j)
-    #                 pos_prob = probs[..., 0:1]
-    #                 all_probs.append((pos_prob.max(), scale))
-    #                 if n_phrases_maxs[j] is None or pos_prob.max() > n_phrases_sims[j].max():
-    #                     n_phrases_maxs[j] = scale
-    #                     n_phrases_sims[j] = pos_prob
-    #     # print(f"Best scales: {n_phrases_maxs}")#, Words: {self.image_encoder.positives}, Scale List: {scales_list}, All probs: {all_probs}")
-    #     # import pdb; pdb.set_trace()
-    #     return torch.stack(n_phrases_sims), torch.Tensor(n_phrases_maxs)#, relevancy_rasterized
+                    probs = self.image_encoder.get_relevancy(clip_output_im.view(-1, self.image_encoder.embedding_dim), j)
+                    pos_prob = probs[..., 0:1]
+                    all_probs.append((pos_prob.max(), scale))
+                    if n_phrases_maxs[j] is None or pos_prob.max() > n_phrases_sims[j].max():
+                        n_phrases_maxs[j] = scale
+                        n_phrases_sims[j] = pos_prob
+        # print(f"Best scales: {n_phrases_maxs}")#, Words: {self.image_encoder.positives}, Scale List: {scales_list}, All probs: {all_probs}")
+        # import pdb; pdb.set_trace()
+        return torch.stack(n_phrases_sims), torch.Tensor(n_phrases_maxs)#, relevancy_rasterized
