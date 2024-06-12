@@ -217,6 +217,8 @@ class GaussianLERFField(Field):
 
         # print("Max scale: ", clip_scale.max(), "Mean scale: ", clip_scale.mean(), "Min scale: ", clip_scale.min())
         # clip_pass = self.clip_feature_net(clip_features)
+
+        # For some reason a very memory intensive step
         outputs[GaussianLERFFieldHeadNames.CLIP] = (clip_pass / clip_pass.norm(dim=-1, keepdim=True)).to(torch.float32)
 
         # dino_pass = self.dino_net(clip_features).view(clip_features.shape[0], -1)

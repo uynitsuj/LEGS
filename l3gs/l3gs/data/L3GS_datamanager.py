@@ -459,7 +459,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                 self.curr_scale = scale
                 scaled_height = H//self.config.clip_downscale_factor
                 scaled_width = W//self.config.clip_downscale_factor
-                self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
+                self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.25)]
 
                 x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
                 y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)

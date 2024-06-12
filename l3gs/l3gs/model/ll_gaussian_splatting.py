@@ -1456,19 +1456,19 @@ class LLGaussianSplattingModel(SplatfactoModel):
             
             query = self._crop_center_init / self.viser_scale_ratio
 
-            # self.viewer_control.viser_server.add_icosphere(
-            # "/query",
-            # radius = 4, 
-            # color = (1.0, 0.0, 0.0),
-            # position=(query[0], query[1], query[2]),
-            # )
-            self.viewer_control.viser_server.add_frame(
+            self.viewer_control.viser_server.add_icosphere(
             "/query",
-            axes_length = 4, 
-            axes_radius = 0.025 * 3,
-            wxyz=(1.0, 0.0, 0.0, 0.0),
+            radius = self.best_scales[0], 
+            color = (1.0, 0.0, 0.0),
             position=(query[0], query[1], query[2]),
             )
+            # self.viewer_control.viser_server.add_frame(
+            # "/query",
+            # axes_length = 4, 
+            # axes_radius = 0.025 * 3,
+            # wxyz=(1.0, 0.0, 0.0, 0.0),
+            # position=(query[0], query[1], query[2]),
+            # )
 
 
             H = self.datamanager.train_dataset._dataparser_outputs.dataparser_transform

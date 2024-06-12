@@ -753,7 +753,7 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    def deproject_droidslam_point_cloud(self, colors, points, frame1, num_samples = 500, device = 'cuda:0'):
+    def deproject_droidslam_point_cloud(self, colors, points, frame1, num_samples = 100, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
