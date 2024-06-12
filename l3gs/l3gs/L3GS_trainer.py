@@ -1237,6 +1237,7 @@ class Trainer:
 
                 if step_check(step, self.config.steps_per_save):
                     self.save_checkpoint(step)
+                    print("Saved checkpoint")
 
                 writer.write_out_storage()
 
