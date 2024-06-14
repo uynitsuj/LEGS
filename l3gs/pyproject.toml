@@ -10,6 +10,7 @@ dependencies=[
     "urllib3==1.26.15",
     "open-clip-torch==2.23.0",
     "numpy==1.26.2",
+    "opencv-contrib-python == 4.10.0.82",
 ]
 [tool.setuptools]
 include-package-data = true
