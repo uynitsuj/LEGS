@@ -8,6 +8,8 @@
 
 *.model
 
+*.joblib
+
 *.png
 
 outputs/unnamed/
