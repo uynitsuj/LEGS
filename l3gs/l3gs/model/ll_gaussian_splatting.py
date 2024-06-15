@@ -128,6 +128,7 @@ def get_viewmat(optimized_camera_to_world):
     return viewmat
 
 
+
 @dataclass
 class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """Gaussian Splatting Model Config"""
@@ -145,7 +146,7 @@ class LLGaussianSplattingModelConfig(SplatfactoModelConfig):
     """at the beginning, resolution is 1/2^d, where d is this number"""
     cull_alpha_thresh: float = 0.1
     """threshold of opacity for culling gaussians. One can set it to a lower value (e.g. 0.005) for higher quality."""
-    cull_scale_thresh: float = 0.5
+    cull_scale_thresh: float = 0.8
     """threshold of scale for culling huge gaussians"""
     continue_cull_post_densification: bool = True
     """If True, continue to cull gaussians post refinement"""
@@ -343,10 +344,6 @@ class LLGaussianSplattingModel(SplatfactoModel):
     @property
     def opacities(self):
         return self.gauss_params["opacities"]
-
-    # @property
-    # def lerf(self):
-    #     return self.gauss_params["lerf"]
 
     def load_state_dict(self, dict, **kwargs):  # type: ignore
         # resize the parameters to match the new number of points
@@ -949,9 +946,16 @@ class LLGaussianSplattingModel(SplatfactoModel):
                     # with torch.no_grad():
                     clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
                     downscale_factor = camera.metadata["clip_downscale_factor"]
-                    clip_H, clip_W = int(H / downscale_factor), int(W / downscale_factor)
-                    clipK = K.clone()
-                    clipK[:, :2, :] *= (1 / downscale_factor)
+
+                    print("K: ", K)
+
+                    camera.rescale_output_resolution(1 / downscale_factor)
+                    clip_W, clip_H = camera.width.item(), camera.height.item()
+                    print(f"clip_W {clip_W} clip_H {clip_H}")
+                    clipK = camera.get_intrinsics_matrices().cuda()
+                    print("clipK: ", clipK)
+                    
+
                     field_output, alpha, info = rasterization(
                         means=means_crop,
                         quats=quats_crop / quats_crop.norm(dim=-1, keepdim=True),
@@ -973,30 +977,15 @@ class LLGaussianSplattingModel(SplatfactoModel):
                         # set some threshold to disregrad small gaussians for faster rendering.
                         # radius_clip=3.0,
                     )
+
+                    # rescale the camera back to original dimensions
+                    camera.rescale_output_resolution(downscale_factor)
                     
-                    # clip_xys, clip_depths, clip_radii, clip_conics, clip_num_tiles_hit, clip_cov3d, clip_W, clip_H = self.project_gaussians(camera, downscale_factor=camera.metadata["clip_downscale_factor"])
 
                     self.random_pixels = self.datamanager.random_pixels.to(self.device)
 
                     clip_scale = self.datamanager.curr_scale * torch.ones((self.random_pixels.shape[0],1),device=self.device)
                     clip_scale = clip_scale * clip_H * (depth_im.view(-1, 1)[self.random_pixels] / camera.fy.item())
-
-
-                    # field_output = rasterize_gaussians(
-                    #     clip_xys.detach(),
-                    #     clip_depths.detach(),
-                    #     clip_radii.detach(),
-                    #     clip_conics.detach(),
-                    #     clip_num_tiles_hit,
-                    #     # clip_hash_encoding[self.dropout_mask] / clip_hash_encoding[self.dropout_mask].norm(dim=-1, keepdim=True),
-                    #     # clip_hash_encoding[self.dropout_mask],
-                    #     clip_hash_encoding,
-                    #     torch.sigmoid(opacities_crop.detach().clone()),
-                    #     clip_H,
-                    #     clip_W,
-                    #     BLOCK_WIDTH,
-                    #     torch.zeros(clip_hash_encoding.shape[1], device=self.device),
-                    # )
 
                     field_output = self.gaussian_lerf_field.get_outputs_from_feature(field_output.view(clip_H*clip_W, -1)[self.random_pixels], clip_scale)
 
@@ -1007,7 +996,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
                 if not self.training:
                     # N x B x 1; N
-                    max_across, self.best_scales = self.get_max_across(means_crop, quats_crop, scales_crop, opacities_crop, viewmat, K, H, W, preset_scales=None)
+                    max_across, self.best_scales = self.get_max_across(means_crop, quats_crop, scales_crop, opacities_crop, viewmat, clipK, clip_H, clip_W, preset_scales=None)
 
                     for i in range(len(self.image_encoder.positives)):
                         max_across[i][max_across[i] < self.relevancy_thresh.value] = 0
