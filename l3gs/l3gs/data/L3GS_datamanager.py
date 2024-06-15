@@ -456,12 +456,14 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
             if step - self.lerf_step > 500 and len(self.clip_interpolator.data_dict[0].data) > image_idx:
                 # print("Training CLIP")
                 H, W = data["image"].shape[:2]
+                H = H * self.dataparser_config.image_downscale_factor
+                W = W * self.dataparser_config.image_downscale_factor
                 scale = torch.rand(1).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
                 # import pdb; pdb.set_trace()
                 # scale = torch.tensor([0.1]).to(self.device)*(self.config.patch_tile_size_range[1]-self.config.patch_tile_size_range[0])+self.config.patch_tile_size_range[0]
                 self.curr_scale = scale
-                scaled_height = H//self.config.clip_downscale_factor
-                scaled_width = W//self.config.clip_downscale_factor
+                scaled_height = H // self.config.clip_downscale_factor
+                scaled_width = W // self.config.clip_downscale_factor
                 self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.25)]
 
                 x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)

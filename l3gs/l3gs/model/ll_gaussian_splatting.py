@@ -297,7 +297,9 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
         #l3gs init
         self.steps_since_add = 0
-
+        
+        self.viewer_control = ViewerControl()
+        self.viser_scale_ratio = 0.1
         self.frame_on_word = ViewerButton("Localize Query", cb_hook=self.localize_query_cb)
         self.relevancy_thresh = ViewerSlider("Relevancy Thresh", 0.0, 0, 1.0, 0.01)
 
@@ -360,9 +362,9 @@ class LLGaussianSplattingModel(SplatfactoModel):
             self.gauss_params[name] = torch.nn.Parameter(torch.zeros(new_shape, device=self.device))
         super().load_state_dict(dict, **kwargs)
 
-    def k_nearest_sklearn(self, x: torch.Tensor, k: int):
+    def k_nearest_sklearn(self, x: torch.Tensor, k: int, include_self: bool = False):
         """
-            Find k-nearest neighbors using sklearn's NearestNeighbors.
+        Find k-nearest neighbors using sklearn's NearestNeighbors.
         x: The data tensor of shape [num_samples, num_features]
         k: The number of neighbors to retrieve
         """
@@ -377,9 +379,11 @@ class LLGaussianSplattingModel(SplatfactoModel):
         # Find the k-nearest neighbors
         distances, indices = nn_model.kneighbors(x_np)
 
-        # Exclude the point itself from the result and return
-        return distances[:, 1:].astype(np.float32), indices[:, 1:].astype(np.float32)
-    
+        if include_self:
+            return distances.astype(np.float32), indices
+        else:
+            return distances[:, 1:].astype(np.float32), indices[:, 1:].astype(np.float32)
+        
     def add_new_params_to_optimizer(self, optimizer, new_param_groups):
         """
         Adds new parameters to the optimizer, initializing necessary states.
@@ -945,15 +949,18 @@ class LLGaussianSplattingModel(SplatfactoModel):
                 if self.training and self.step>self.config.warmup_length and (self.step % reset_interval > self.num_train_data + self.config.refine_every  or self.step < (self.config.reset_alpha_every * self.config.refine_every)):
                     # with torch.no_grad():
                     clip_hash_encoding = self.gaussian_lerf_field.get_hash(self.means)
-                    downscale_factor = camera.metadata["clip_downscale_factor"]
+                    # downscale_factor = camera.metadata["clip_downscale_factor"]
+                    # print("K: ", K)
 
-                    print("K: ", K)
+                    rgb_downscale = self.datamanager.train_dataset._dataparser_outputs.metadata['image_downscale_factor']
+
+                    downscale_factor = camera.metadata["clip_downscale_factor"] / rgb_downscale
 
                     camera.rescale_output_resolution(1 / downscale_factor)
                     clip_W, clip_H = camera.width.item(), camera.height.item()
-                    print(f"clip_W {clip_W} clip_H {clip_H}")
+                    # print(f"clip_W {clip_W} clip_H {clip_H}")
                     clipK = camera.get_intrinsics_matrices().cuda()
-                    print("clipK: ", clipK)
+                    # print("clipK: ", clipK)
                     
 
                     field_output, alpha, info = rasterization(
@@ -996,7 +1003,7 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
                 if not self.training:
                     # N x B x 1; N
-                    max_across, self.best_scales = self.get_max_across(means_crop, quats_crop, scales_crop, opacities_crop, viewmat, clipK, clip_H, clip_W, preset_scales=None)
+                    max_across, self.best_scales = self.get_max_across(means_crop, quats_crop, scales_crop, opacities_crop, viewmat, K, H, W, preset_scales=None)
 
                     for i in range(len(self.image_encoder.positives)):
                         max_across[i][max_across[i] < self.relevancy_thresh.value] = 0

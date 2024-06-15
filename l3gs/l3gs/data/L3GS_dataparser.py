@@ -77,7 +77,7 @@ class L3GSDataParser(DataParser):
                 pre-allocate tensors for the Cameras object that tracks camera pose.
         """
         meta = {}
-
+        image_downscale_factor = self.config.image_downscale_factor
         image_height = self.config.img_height // self.config.image_downscale_factor
         image_width = self.config.img_width // self.config.image_downscale_factor
         depth_height = self.config.depth_height
@@ -132,7 +132,8 @@ class L3GSDataParser(DataParser):
             "image_height": image_height,
             "image_width": image_width,
             "depth_height": depth_height,
-            "depth_width": depth_width
+            "depth_width": depth_width,
+            "image_downscale_factor": image_downscale_factor,
         }
 
         # Pointcloud or random
