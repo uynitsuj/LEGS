@@ -106,7 +106,8 @@ class L3GSDataset(InputDataset):
         self.cameras.height[self.cur_size] = cam.height
         self.cameras.width[self.cur_size] = cam.width
         self.image_tensor[self.cur_size,...] = img
-        self.depth_tensor[self.cur_size,...] = depth.unsqueeze(-1)
+        if depth is not None:
+            self.depth_tensor[self.cur_size,...] = depth.unsqueeze(-1)
         self.cur_size += 1
         # import pdb; pdb.set_trace()
         # from torch.nn import functional as F

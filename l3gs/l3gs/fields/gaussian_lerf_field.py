@@ -206,10 +206,13 @@ class GaussianLERFField(Field):
 
         encodings = [e(positions.view(-1, 3)) for e in self.clip_encs]
         encoding = torch.concat(encodings, dim=-1)
+
+        # import pdb; pdb.set_trace()
         return encoding.to(torch.float32)
     
     def get_outputs_from_feature(self, clip_features, clip_scale) -> Dict[GaussianLERFFieldHeadNames, Tensor]:
         outputs = {}
+        # import pdb; pdb.set_trace()
         
         #clip_features is Nx32, and clip scale is a number, I want to cat clip scale to the end of clip_features where clip scale is an int
         # clip_pass = self.clip_feature_net(torch.cat([clip_features, clip_scale.view(-1, 1)], dim=-1))

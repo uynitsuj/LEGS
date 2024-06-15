@@ -253,10 +253,11 @@ class L3GSPipeline(VanillaPipeline):
         pose: Cameras, 
         clip: dict,
         dino,
+        downscale_factor = 1,
     ):
         print("Adding image to train dataset",pose.camera_to_worlds[:3,3].flatten())
         
-        self.datamanager.process_image(img, depth, pose, clip, dino)
+        self.datamanager.process_image(img, depth, pose, clip, dino, downscale_factor)
         self.img_count += 1
         # self.datamanager.train_pixel_sampler.nonzero_indices = torch.nonzero(self.datamanager.train_dataset.mask_tensor[0:len(self.datamanager.train_dataset), ..., 0].to(self.device), as_tuple=False)
 

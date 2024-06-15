@@ -29,6 +29,7 @@ import torch
 import time
 from copy import deepcopy, copy
 from torch.nn import Parameter
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from nerfstudio.cameras.rays import RayBundle
@@ -166,8 +167,10 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # )
         torch.cuda.empty_cache()
 
-        h = self.train_dataparser_outputs.metadata['image_height']
-        w = self.train_dataparser_outputs.metadata['image_width']
+        h = self.dataparser_config.img_height
+        w = self.dataparser_config.img_width
+        print("Input image shape: ", h, w)
+        print("RGB Downresolution shape: ", self.train_dataparser_outputs.metadata['image_height'], self.train_dataparser_outputs.metadata['image_width'])
 
         self.clip_interpolator = PyramidEmbeddingDataloader(
             image_list=[],
@@ -459,7 +462,7 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
                 self.curr_scale = scale
                 scaled_height = H//self.config.clip_downscale_factor
                 scaled_width = W//self.config.clip_downscale_factor
-                self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.5)]
+                self.random_pixels = torch.randperm(scaled_height*scaled_width)[:int((scaled_height*scaled_height)*0.25)]
 
                 x = torch.arange(0, scaled_width*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(1, scaled_width, 1).expand(scaled_height, scaled_width, 1)
                 y = torch.arange(0, scaled_height*self.config.clip_downscale_factor, self.config.clip_downscale_factor).view(scaled_height, 1, 1).expand(scaled_height, scaled_width, 1)
@@ -538,11 +541,35 @@ class L3GSDataManager(DataManager, Generic[TDataset]):
         # ----------------- Handling the lerf features ----------------
         self.clip_interpolator.add_images(img.unsqueeze(0))
 
+
+    def antialiased_downres(self, image, factor, is_color_image=False):
+        assert factor % 2 == 0, "factor must be a multiple of 2"
+        
+        kernel_size = 2 * factor - 1
+        sigma = factor / 2
+
+        torch_image = image
+
+        torch_image = torch_image.unsqueeze(0).unsqueeze(0)
+        blurred_image = cv2.GaussianBlur(np.array(torch_image),(kernel_size,kernel_size),sigma)
+        if is_color_image:
+            blurred_image = blurred_image.squeeze(0).transpose(0, 3, 1, 2)
+        else:
+            blurred_image = blurred_image
+        blurred_image = torch.from_numpy(blurred_image).float()
+        downsampled = F.interpolate(blurred_image, size=(image.shape[0] // factor, image.shape[1] // factor), mode='bilinear' ,antialias=True).numpy()
+        if is_color_image:
+            downsampled = downsampled.transpose(0, 2, 3, 1).squeeze(0)
+        else:
+            downsampled = downsampled.squeeze(0).squeeze(0)
+
+        return downsampled
+
     # @profile
-    def process_image(self, img:torch.Tensor, depth:torch.Tensor, cam: Cameras, clip, dino):
+    def process_image(self, img:torch.Tensor, depth:torch.Tensor, cam: Cameras, clip, dino, downscale_factor = 1):
         # ----------------- Handling the IMAGE ----------------
         # raise NotImplementedError
-        # import pdb; pdb.set_trace()
+        img = torch.from_numpy(self.antialiased_downres(img, downscale_factor, True)).float()
         self.train_dataset.add_image(img,depth,cam)
         self.train_unseen_cameras = [i for i in range(len(self.train_dataset))]
         

@@ -144,6 +144,8 @@ class TrainerConfig(ExperimentConfig):
     """Optionally log gradients during training"""
     gradient_accumulation_steps: int = 1
     """Number of steps to accumulate gradients over."""
+    image_downscale_factor: int = 4
+    """Anti-aliased image downresolution factor."""
 
 class TrainerNode(Node):
     def __init__(self,trainer):
@@ -402,207 +404,11 @@ class Trainer:
         returns the image, depth, and pose if the dataparser is defined yet, otherwise None
         if decode_only, don't add the image to the clip/dino queue using `add_image`.
         '''
-        # image: Image = msg.img
-        # camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
-        # print('self.imgidx: ' + str(self.imgidx))
-        # # CONSOLE.print("Adding image to dataset")
-        # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
+
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         
-        # fx = torch.tensor([msg.fl_x])
-        # fy = torch.tensor([msg.fl_y])
-        # cy = torch.tensor([msg.cy])
-        # cx = torch.tensor([msg.cx])
-        # cx = torch.tensor([msg.cy])
-        # cy = torch.tensor([msg.cx])
-
-        ### Multicamera Support
-        # width = torch.tensor([msg.w])
-        # height = torch.tensor([msg.h])
-        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        # camera_type = CameraType.PERSPECTIVE
-        # camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type).reshape(())
-        # K = camera.get_intrinsics_matrices().numpy()
-
-        # if self.multicam:
-        #     crop_top = 60
-        #     crop_bottom = 480 - 60
-        #     if msg.w != msg.img.width or msg.h != msg.img.height:
-        #         # crop image_data to new_W new_H centered
-        #         image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
-        #         # print('after croppping', image_data.shape)
-        #         import torch.nn.functional as F
-        #         image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
-        #         # back to HxWxC
-        #         image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
-        #         # print('after resize', image_data.shape)
-        # K, image_data, mask = self._undistort_image(camera, get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3).numpy(), {}, image_data.cpu().numpy(), K)
-        # image_data = torch.from_numpy(image_data).to(torch.float32)
-
         if not decode_only:
-            # with self.train_lock:
             self.pipeline.add_image(img = image_data)
-        # dep_out *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        # #TODO add the dataparser transform here
-        # H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
-        # row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=retc.camera_to_worlds.device)
-        # retc.camera_to_worlds = torch.matmul(torch.cat([H,row]),torch.cat([retc.camera_to_worlds,row]))[:3,:]
-        # retc.camera_to_worlds[:3,3] *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        # if not self.done_scale_calc:
-        #     return None,None,None
-        # return img_out, dep_out, retc
-
-    # @profile
-    def _undistort_image(self, camera: Cameras, distortion_params: np.ndarray, data: dict, image: np.ndarray, K: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Optional[torch.Tensor]]:
-        mask = None
-        if camera.camera_type.item() == CameraType.PERSPECTIVE.value:
-            distortion_params = np.array(
-                [
-                    distortion_params[0],
-                    distortion_params[1],
-                    distortion_params[4],
-                    distortion_params[5],
-                    distortion_params[2],
-                    distortion_params[3],
-                    0,
-                    0,
-                ]
-            )
-            if np.any(distortion_params):
-                newK, roi = cv2.getOptimalNewCameraMatrix(K, distortion_params, (image.shape[1], image.shape[0]), 0)
-                image = cv2.undistort(image, K, distortion_params, None, newK)  # type: ignore
-            else:
-                newK = K
-                roi = 0, 0, image.shape[1], image.shape[0]
-            # crop the image and update the intrinsics accordingly
-            x, y, w, h = roi
-            image = image[y : y + h, x : x + w]
-            if "depth_image" in data:
-                data["depth_image"] = data["depth_image"][y : y + h, x : x + w]
-            if "mask" in data:
-                mask = data["mask"].numpy()
-                mask = mask.astype(np.uint8) * 255
-                if np.any(distortion_params):
-                    mask = cv2.undistort(mask, K, distortion_params, None, newK)  # type: ignore
-                mask = mask[y : y + h, x : x + w]
-                mask = torch.from_numpy(mask).bool()
-            K = newK
-
-        elif camera.camera_type.item() == CameraType.FISHEYE.value:
-            distortion_params = np.array(
-                [distortion_params[0], distortion_params[1], distortion_params[2], distortion_params[3]]
-            )
-            newK = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-                K, distortion_params, (image.shape[1], image.shape[0]), np.eye(3), balance=0
-            )
-            map1, map2 = cv2.fisheye.initUndistortRectifyMap(
-                K, distortion_params, np.eye(3), newK, (image.shape[1], image.shape[0]), cv2.CV_32FC1
-            )
-            # and then remap:
-            image = cv2.remap(image, map1, map2, interpolation=cv2.INTER_LINEAR)
-            if "mask" in data:
-                mask = data["mask"].numpy()
-                mask = mask.astype(np.uint8) * 255
-                mask = cv2.fisheye.undistortImage(mask, K, distortion_params, None, newK)
-                mask = torch.from_numpy(mask).bool()
-            K = newK
-        elif camera.camera_type.item() == CameraType.FISHEYE624.value:
-            fisheye624_params = torch.cat(
-                [camera.fx, camera.fy, camera.cx, camera.cy, torch.from_numpy(distortion_params)], dim=0
-            )
-            assert fisheye624_params.shape == (16,)
-            assert (
-                "mask" not in data
-                and camera.metadata is not None
-                and "fisheye_crop_radius" in camera.metadata
-                and isinstance(camera.metadata["fisheye_crop_radius"], float)
-            )
-            fisheye_crop_radius = camera.metadata["fisheye_crop_radius"]
-
-            # Approximate the FOV of the unmasked region of the camera.
-            upper, lower, left, right = fisheye624_unproject_helper(
-                torch.tensor(
-                    [
-                        [camera.cx, camera.cy - fisheye_crop_radius],
-                        [camera.cx, camera.cy + fisheye_crop_radius],
-                        [camera.cx - fisheye_crop_radius, camera.cy],
-                        [camera.cx + fisheye_crop_radius, camera.cy],
-                    ],
-                    dtype=torch.float32,
-                )[None],
-                params=fisheye624_params[None],
-            ).squeeze(dim=0)
-            fov_radians = torch.max(
-                torch.acos(torch.sum(upper * lower / torch.linalg.norm(upper) / torch.linalg.norm(lower))),
-                torch.acos(torch.sum(left * right / torch.linalg.norm(left) / torch.linalg.norm(right))),
-            )
-
-            # Heuristics to determine parameters of an undistorted image.
-            undist_h = int(fisheye_crop_radius * 2)
-            undist_w = int(fisheye_crop_radius * 2)
-            undistort_focal = undist_h / (2 * torch.tan(fov_radians / 2.0))
-            undist_K = torch.eye(3)
-            undist_K[0, 0] = undistort_focal  # fx
-            undist_K[1, 1] = undistort_focal  # fy
-            undist_K[0, 2] = (undist_w - 1) / 2.0  # cx; for a 1x1 image, center should be at (0, 0).
-            undist_K[1, 2] = (undist_h - 1) / 2.0  # cy
-
-            # Undistorted 2D coordinates -> rays -> reproject to distorted UV coordinates.
-            undist_uv_homog = torch.stack(
-                [
-                    *torch.meshgrid(
-                        torch.arange(undist_w, dtype=torch.float32),
-                        torch.arange(undist_h, dtype=torch.float32),
-                    ),
-                    torch.ones((undist_w, undist_h), dtype=torch.float32),
-                ],
-                dim=-1,
-            )
-            assert undist_uv_homog.shape == (undist_w, undist_h, 3)
-            dist_uv = (
-                fisheye624_project(
-                    xyz=(
-                        torch.einsum(
-                            "ij,bj->bi",
-                            torch.linalg.inv(undist_K),
-                            undist_uv_homog.reshape((undist_w * undist_h, 3)),
-                        )[None]
-                    ),
-                    params=fisheye624_params[None, :],
-                )
-                .reshape((undist_w, undist_h, 2))
-                .numpy()
-            )
-            map1 = dist_uv[..., 1]
-            map2 = dist_uv[..., 0]
-
-            # Use correspondence to undistort image.
-            image = cv2.remap(image, map1, map2, interpolation=cv2.INTER_LINEAR)
-
-            # Compute undistorted mask as well.
-            dist_h = camera.height.item()
-            dist_w = camera.width.item()
-            mask = np.mgrid[:dist_h, :dist_w]
-            mask[0, ...] -= dist_h // 2
-            mask[1, ...] -= dist_w // 2
-            mask = np.linalg.norm(mask, axis=0) < fisheye_crop_radius
-            mask = torch.from_numpy(
-                cv2.remap(
-                    mask.astype(np.uint8) * 255,
-                    map1,
-                    map2,
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_CONSTANT,
-                    borderValue=0,
-                )
-                / 255.0
-            ).bool()[..., None]
-            assert mask.shape == (undist_h, undist_w, 1)
-            K = undist_K.numpy()
-        else:
-            raise NotImplementedError("Only perspective and fisheye cameras are supported")
-
-        return K, image, mask
 
 
     def process_query_diff(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
@@ -621,14 +427,12 @@ class Trainer:
         image = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
         image, depth = image.to(self.device), depth.to(self.device)
-        fx = torch.tensor([msg.fl_x])
-        fy = torch.tensor([msg.fl_y])
-        cy = torch.tensor([msg.cy])
-        cx = torch.tensor([msg.cx])
-        # cx = torch.tensor([msg.cy])
-        # cy = torch.tensor([msg.cx])
-        width = torch.tensor([msg.w])
-        height = torch.tensor([msg.h])
+        fx = torch.tensor([msg.fl_x]) / self.config.image_downscale_factor
+        fy = torch.tensor([msg.fl_y]) / self.config.image_downscale_factor
+        cy = torch.tensor([msg.cy]) / self.config.image_downscale_factor
+        cx = torch.tensor([msg.cx]) / self.config.image_downscale_factor
+        width = torch.tensor([msg.w]) / self.config.image_downscale_factor
+        height = torch.tensor([msg.h]) / self.config.image_downscale_factor
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
         pose = Cameras(c2w, fx, fy, cx, cy, width, height, distortion_params, camera_type)
@@ -753,7 +557,7 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    def deproject_droidslam_point_cloud(self, colors, points, frame1, num_samples = 500, device = 'cuda:0'):
+    def deproject_droidslam_point_cloud(self, colors, points, frame1, num_samples = 100, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -803,14 +607,13 @@ class Trainer:
         
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
-        fx = torch.tensor([msg.fl_x])
-        fy = torch.tensor([msg.fl_y])
-        cy = torch.tensor([msg.cy])
-        cx = torch.tensor([msg.cx])
+        fx = torch.tensor([msg.fl_x]) / self.config.image_downscale_factor
+        fy = torch.tensor([msg.fl_y]) / self.config.image_downscale_factor
+        cy = torch.tensor([msg.cy]) / self.config.image_downscale_factor
+        cx = torch.tensor([msg.cx]) / self.config.image_downscale_factor
 
-        ### Multicamera Support
-        width = torch.tensor([msg.w])
-        height = torch.tensor([msg.h])
+        width = torch.tensor([msg.w]) // self.config.image_downscale_factor
+        height = torch.tensor([msg.h]) // self.config.image_downscale_factor
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
 
@@ -818,7 +621,8 @@ class Trainer:
         camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type, metadata = metadata).reshape(())
 
         with self.train_lock:
-            self.pipeline.process_image(img = image_data, depth = depth, pose = camera, clip=clip_dict, dino=dino_data)
+            depth = None # Changed since image downres + DROIDSLAM
+            self.pipeline.process_image(img = image_data, depth = depth, pose = camera, clip=clip_dict, dino=dino_data, downscale_factor=self.config.image_downscale_factor)
         # print("Done processing image")
         image_uint8 = (image_data * 255).detach().type(torch.uint8)
         image_uint8 = image_uint8.permute(2, 0, 1)
@@ -851,7 +655,6 @@ class Trainer:
         self.viewer_state.camera_handles[cidx] = camera_handle
         self.viewer_state.original_c2w[cidx] = c2w
 
-        # import pdb; pdb.set_trace() 
         if not self.multicam:
             project_interval = 4
             if self.done_scale_calc and msg.depth is not None and idx % project_interval == 0:
@@ -899,12 +702,6 @@ class Trainer:
                 deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
                 self.deprojected_queue.append(deprojected)
                 self.colors_queue.append(colors)
-            #     elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
-            #         depth = self.pipeline.monodepth_inference(image_data.numpy())
-            #         # depth = torch.rand((1,1,480,640))
-            #         deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam) #, num_samples = 40)
-            #         self.deprojected_queue.extend(deprojected)
-            #         self.colors_queue.extend(colors)
 
 
     def update_poses(self, BA_deltas, start_idx):
@@ -1071,9 +868,6 @@ class Trainer:
                 if has_image_add:
                     #Not sure if we want to loop till the queue is empty or not
                     msg, points, colors, prev_poses, pp_sig, cam_lr = self.image_add_callback_queue.pop(0)
-
-                    # import pdb; pdb.set_trace()
-
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
@@ -1424,6 +1218,7 @@ class Trainer:
             # elapsed = str((end-start)*1e3)
             # print("get_train_loss time: "+ elapsed + "(ms)")
             loss = functools.reduce(torch.add, loss_dict.values())
+        
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [
             group
