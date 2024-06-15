@@ -200,25 +200,6 @@ class L3GSPipeline(VanillaPipeline):
         self.use_rgb = use_rgb
         self.use_clip = use_clip 
         self.plot_verbose = True
-
-        # self.highres_downscale = highres_downscale
-        
-        # self.use_rgb = use_rgb
-        # self.use_clip = use_clip 
-        # self.use_vit = use_vit
-        # self.use_depth = use_depth
-        # # only one of use rgb, use clip, and use depth can be true 
-        # assert (self.use_rgb + self.use_clip + self.use_depth + self.use_vit) == 1, "only one of use_rgb, use_clip, and use_depth can be true"
-        # self.model_name = model_name
-        # # self.diff_checkbox = ViewerCheckbox("Calculate diff",False)
-        
-        # if not self.use_clip:
-        #     assert model_name in query_diff_utils.model_params.keys(), "model name not found"
-        #     self.extractor = ViTExtractor(
-        #         model_name, 
-        #         query_diff_utils.model_params[model_name]['dino_stride'],
-        #     )
-        #     self.dino_thres = dino_thres
         
         self.img_count = 0
 
@@ -229,18 +210,7 @@ class L3GSPipeline(VanillaPipeline):
         img: torch.Tensor, 
         pose: Cameras = None, 
     ):
-        # if self.diff_checkbox.value:
-        #     heat_map = self.query_diff(img, pose)
-        #     lerf_output = query_diff_utils.get_lerf_outputs(pose.to(self.device), self, 1.0)
-        # fig, ax = plt.subplots(3)
-        # ax[0].imshow(img.detach().cpu().numpy())
-        #     ax[1].imshow(heat_map.detach().cpu().numpy().squeeze())
-        #     ax[2].imshow(lerf_output["rgb"].detach().cpu().numpy())
-        # plt.show()
-        #     boxes = self.heatmaps2box([heat_map], [pose], [lerf_output["depth"]])
-        #     print(boxes)
-            # self.mask_volume(boxes) #This will deal with the masks in the datamanager
-        # self.datamanager.add_image(img, pose)
+
         self.datamanager.add_image(img)
         # self.img_count += 1
 
@@ -259,16 +229,11 @@ class L3GSPipeline(VanillaPipeline):
         
         self.datamanager.process_image(img, depth, pose, clip, dino, downscale_factor)
         self.img_count += 1
-        # self.datamanager.train_pixel_sampler.nonzero_indices = torch.nonzero(self.datamanager.train_dataset.mask_tensor[0:len(self.datamanager.train_dataset), ..., 0].to(self.device), as_tuple=False)
-
-    # def print_num_means(self):
-        # print(self.model.means.shape[0])
 
     def add_to_clip(self, clip: dict, step: int):
         self.datamanager.add_to_clip(clip, step)
 
     def monodepth_inference(self, image):
-        # print(type(image))
         # Down-sample
         down_height = image.shape[0] // 2
         down_width = image.shape[1] // 2
@@ -276,12 +241,7 @@ class L3GSPipeline(VanillaPipeline):
         
         depth = self.depthmodel.get_depth(imagedown)
 
-        # import pdb; pdb.set_trace()
-        # Up-resolution
-        # depth = cv2.resize(np.array(depth.cpu()), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
         depth = F.interpolate(depth, size=(image.shape[0], image.shape[1]), mode='bilinear', align_corners=False)
-
-
 
         return depth
 
@@ -351,18 +311,6 @@ class L3GSPipeline(VanillaPipeline):
         diff_bool_cleaned = torch.from_numpy(diff_bool_cleaned).to(self.device)
         plt.imsave('diff_bool_cleaned.png', diff_bool_cleaned.cpu().detach().numpy())
 
-        # depth_output = gsplat_outputs['depth'].squeeze(2)
-        # plt.imsave('depth_output.png', depth_output.detach().cpu().numpy())
-        # diff = torch.norm(depth_output - depth, dim=-1)
-        # plt.imsave('depth_diff.png', diff.detach().cpu().numpy())
-        # diff_bool = diff > thres
-        # plt.imsave('depth_diff_bool.png', diff_bool.detach().cpu().numpy())
-        # kernel = np.ones((3, 3), np.uint8)
-        # diff_bool_eroded = cv2.erode(diff_bool.cpu().numpy().astype(np.uint8), kernel, iterations=1)
-        # diff_bool_cleaned = cv2.dilate(diff_bool_eroded, kernel, iterations=1)
-        # diff_bool_cleaned = torch.from_numpy(diff_bool_cleaned).to(self.device)
-        # plt.imsave('depth_diff_bool_cleaned.png', diff_bool_cleaned.cpu().detach().numpy())
-
         if vis_verbose:
             fig, ax = plt.subplots(1, 4)
             ax[0].imshow(image.detach().cpu().numpy())
@@ -372,6 +320,7 @@ class L3GSPipeline(VanillaPipeline):
             plt.show()
 
         return diff, diff_bool_cleaned, gsplat_outputs
+    
     def heatmaps2box(self, 
         heatmaps: List[torch.Tensor], # list of boolean tensors (HxW)
         heatmap_masks: List[torch.Tensor], # list of boolean tensors (HxW)
@@ -460,18 +409,6 @@ class L3GSPipeline(VanillaPipeline):
 
             obox = OrientedBox.from_points(points_proj, device=self.device)
 
-            # OrientedBox.from_points uses PCA to find the orientation of the box, so 
-            # the first component is aligned with the z-axis of the scene (because it's the largest variance)
-            # obox.T[2] = 0
-            # obox.S[0] = 0
-
-            # obox_3d = OrientedBox(
-            #     R=obox.R,
-            #     T=obox.T + torch.Tensor([0, 0, torch.mean(points[:, 2])]).to(self.device),
-            #     S=(obox.S + torch.Tensor([torch.max(points[:, 2]) - torch.min(points[:, 2]), 0, 0]).to(self.device)) * 1.5,
-            # )
-            # obox.S *= self.datamanager.train_dataparser_outputs.dataparser_scale
-            # obox.R, obox.T, obox.S = obox.R, obox.T / 10., obox.S / 10.
             list_of_boxes.append(obox)
 
         points = sum([points_tr], trimesh.PointCloud(vertices=np.array([[0, 0, 0]])))
@@ -579,8 +516,6 @@ class L3GSPipeline(VanillaPipeline):
                 continue
 
             points_proj = points.clone()
-            # points_proj[:, 2] = torch.rand(points_proj.shape[0]) * 0.05
-            # points_proj = torch.cat([points_proj, points_proj + torch.Tensor([0, 0, 10.0])], dim=0)
 
             #### OrientedBox
             obox = OrientedBox.from_points(points_proj, device=self.device)

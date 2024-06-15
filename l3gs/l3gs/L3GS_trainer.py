@@ -490,8 +490,6 @@ class Trainer:
 
                 affected_gaussians_idxs = self.pipeline.bbox2gaussians(obox)
                 inside = obox.within(self.pipeline.model.means)
-                # print(affected_gaussians_idxs.shape, self.pipeline.model.means.shape)
-                # self.pipeline.model.means = Parameter(self.pipeline.model.means[~affected_gaussians_idxs].detach())
             self.diff_wait_counter = 5
 
             print(poses, affected_gaussians_idxs)
@@ -726,13 +724,6 @@ class Trainer:
                 self.viewer_state.camera_handles[idxs[idx * cam_factor + i]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
                 self.viewer_state.camera_handles[idxs[idx * cam_factor + i]].wxyz = R.wxyz
 
-            # if idx > missed_depro:
-            #     if start_idx == 0:
-            #         points_homog = torch.cat([self.deprojected_queue[idx-missed_depro-1], torch.ones((self.deprojected_queue[idx-missed_depro-1].shape[0], 1), device='cuda:0')], dim=1)
-            #         self.deprojected_queue[idx-missed_depro-1] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
-                # else:
-                #     points_homog = torch.cat([self.deprojected_queue[idx-start_idx], torch.ones((self.deprojected_queue[idx-start_idx].shape[0], 1), device='cuda:0')], dim=1)
-                #     self.deprojected_queue[idx-start_idx] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
         self.start_idx = len(self.pipeline.datamanager.train_dataset)
 
     def setup(self, test_mode: Literal["test", "val", "inference"] = "val") -> None:
@@ -832,7 +823,7 @@ class Trainer:
 
     # @profile
     def train(self) -> None:
-        print("IM IN")
+        print("Waiting for ROS Msgs")
         """Train the model."""
         assert self.pipeline.datamanager.train_dataset is not None, "Missing DatsetInputs"
 
@@ -859,22 +850,19 @@ class Trainer:
             
             while True:
                 if self.pipeline.model.localized_query is not None:
-                    self.localized_coords = self.pipeline.model.localized_query
+                    self.localized_coords = self.pipeline.model.localized_query # TODO: Justin - ROS publish the localized coords
                 rclpy.spin_once(trainer_node,timeout_sec=0.00)
 
                 has_image_add = len(self.image_add_callback_queue) > 0
                 pp_sig = False
                 prev_poses = None
                 if has_image_add:
-                    #Not sure if we want to loop till the queue is empty or not
                     msg, points, colors, prev_poses, pp_sig, cam_lr = self.image_add_callback_queue.pop(0)
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
                     if pp_sig is False:
                         if self.calculate_diff:
-                            # TODO: Kishore and Justin
-                            # raise NotImplementedError
                             self.query_diff_queue.append(msg)
 
                         else:
@@ -884,18 +872,21 @@ class Trainer:
 
                         if not self.done_scale_calc:
                             parser_scale_list.append(msg.pose)
-                        
+                
+                # Adds new images in queue to RGB train dataset
                 while len(self.image_process_queue) > 0:
                     message, pts, clrs, camlr = self.image_process_queue.pop(0)
                     self.process_image(message, step, pts, clrs, camlr)
                 
+                # Adds images in queue to CLIP Pyramid
                 if self.train_lerf and len(self.add_to_clip_queue) > 0:
                     self.add_img_callback(self.add_to_clip_queue.pop(0))
-
+                # Takes CLIP Pyramid embed outputs from queue and adds them to train dataset
                 if self.train_lerf and not self.clip_out_queue.empty():
                     print("adding clip pyramid embeddings")
                     self.pipeline.add_to_clip(self.clip_out_queue.get(), step)
 
+                # SLAM bundle adjustment signal
                 if pp_sig:
                         BA_flag = True
                         new_poses = torch.Tensor(prev_poses).reshape(-1,7)
@@ -905,7 +896,8 @@ class Trainer:
                 if self.training_state == "paused":
                     time.sleep(0.01)
                     continue
-                
+
+                # Don't start training until we have at least 5 images
                 if not self.done_scale_calc and (len(parser_scale_list)<5):
                     time.sleep(0.01)
                     continue
@@ -914,9 +906,8 @@ class Trainer:
                 # Starting training
                 #######################################
 
-                # Create scene scale based on the images collected so far. This is done once.
+                # Create scene scale based on the images collected so far. This is done once. JY - Overwritten to 1 for metric world scale
                 if not self.done_scale_calc:
-                    # print("Scale calc")
                     self.done_scale_calc = True
                     from nerfstudio.cameras.camera_utils import auto_orient_and_center_poses
                     poses = [np.concatenate([ros_pose_to_nerfstudio(p),np.array([[0,0,0,1]])],axis=0) for p in parser_scale_list]
@@ -926,10 +917,7 @@ class Trainer:
                         method='up',
                         center_method='poses'
                     )
-                    # scale_factor = 1.0
-                    # scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
                     scale_factor = 1.0
-                    print(scale_factor)
                     self.pipeline.datamanager.train_dataset._dataparser_outputs.dataparser_transform = transform_matrix
                     self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform = transform_matrix
                     self.pipeline.datamanager.train_dataset._dataparser_outputs.dataparser_scale = scale_factor
@@ -955,8 +943,6 @@ class Trainer:
                 if len(self.pipeline.datamanager.train_dataset) <= 1:
                     time.sleep(0.01)
                     continue
-
-                # Check if we have an image to process, and add *all of them* to the dataset per iteration.
 
                 step +=1 
                 
