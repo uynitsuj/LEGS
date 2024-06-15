@@ -48,6 +48,7 @@ import rclpy
 from rclpy.node import Node
 from lifelong_msgs.msg import ImagePose
 from lifelong_msgs.msg import ImagePoses
+from geometry_msgs.msg import Vector3
 from l3gs.L3GS_pipeline import L3GSPipeline
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Pose
@@ -143,6 +144,8 @@ class TrainerConfig(ExperimentConfig):
     """Optionally log gradients during training"""
     gradient_accumulation_steps: int = 1
     """Number of steps to accumulate gradients over."""
+    image_downscale_factor: int = 4
+    """Anti-aliased image downresolution factor."""
 
 class TrainerNode(Node):
     def __init__(self,trainer):
@@ -159,18 +162,30 @@ class TricamTrainerNode(Node):
         super().__init__('trainer_node')
         self.trainer_ = trainer
         self.subscription_ = self.create_subscription(ImagePoses,"/camera/color/imagepose",self.add_img_callback,100)
+        self.publisher_ = self.create_publisher(Vector3, "/gsplat/coord", 10)
+        timer_period = 0.5  # seconds
+        self.timer = self.create_timer(timer_period, self.pub_coord_callback)
 
     def add_img_callback(self,msg):
         print("Appending imagepose to queue",flush=True)
         # self.trainer_.image_add_callback_queue.append(msg)
         if msg.got_prev_poses is False:
-            self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses))
+            self.trainer_.image_add_callback_queue.append((msg.image_poses[0], msg.points, msg.colors, None, msg.got_prev_poses, 0))
+            # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None, None, None, False, 1))
+            # ZED RIGHT
+            # self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
         else:
-            self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses))
+            self.trainer_.image_add_callback_queue.append((None, None, None, msg.prev_poses, msg.got_prev_poses, 0))
 
-        # self.trainer_.image_add_callback_queue.append((msg.image_poses[1], None))
-
-        # self.trainer_.image_add_callback_queue.append(msg.image_poses[2])
+        # self.trainer_.image_add_callback_queue.append((msg.image_poses[2], None, None, None, False, 2))
+    def pub_coord_callback(self):
+        if self.trainer_.localized_coords is not None:
+            coord = self.trainer_.localized_coords
+            msg = Vector3()
+            msg.x = float(coord[0])
+            msg.y = float(coord[1])
+            msg.z = float(coord[2])
+            self.publisher_.publish(msg)
 
 class Trainer:
     """Trainer class
@@ -247,6 +262,7 @@ class Trainer:
         self.train_lerf = False
         self.diff_wait_counter = 0
         self.multicam = True
+        self.localized_coords = None
 
     def handle_stage_btn(self, handle: ViewerButton):
         import os.path as osp
@@ -388,207 +404,11 @@ class Trainer:
         returns the image, depth, and pose if the dataparser is defined yet, otherwise None
         if decode_only, don't add the image to the clip/dino queue using `add_image`.
         '''
-        # image: Image = msg.img
-        # camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
-        # print('self.imgidx: ' + str(self.imgidx))
-        # # CONSOLE.print("Adding image to dataset")
-        # # image_data = torch.tensor(image.data, dtype=torch.uint8).view(image.height, image.width, -1).to(torch.float32)/255.
+
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         
-        # fx = torch.tensor([msg.fl_x])
-        # fy = torch.tensor([msg.fl_y])
-        # cy = torch.tensor([msg.cy])
-        # cx = torch.tensor([msg.cx])
-        # cx = torch.tensor([msg.cy])
-        # cy = torch.tensor([msg.cx])
-
-        ### Multicamera Support
-        # width = torch.tensor([msg.w])
-        # height = torch.tensor([msg.h])
-        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        # camera_type = CameraType.PERSPECTIVE
-        # camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type).reshape(())
-        # K = camera.get_intrinsics_matrices().numpy()
-
-        # if self.multicam:
-        #     crop_top = 60
-        #     crop_bottom = 480 - 60
-        #     if msg.w != msg.img.width or msg.h != msg.img.height:
-        #         # crop image_data to new_W new_H centered
-        #         image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
-        #         # print('after croppping', image_data.shape)
-        #         import torch.nn.functional as F
-        #         image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
-        #         # back to HxWxC
-        #         image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
-        #         # print('after resize', image_data.shape)
-        # K, image_data, mask = self._undistort_image(camera, get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3).numpy(), {}, image_data.cpu().numpy(), K)
-        # image_data = torch.from_numpy(image_data).to(torch.float32)
-
         if not decode_only:
-            # with self.train_lock:
             self.pipeline.add_image(img = image_data)
-        # dep_out *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        # #TODO add the dataparser transform here
-        # H = self.pipeline.datamanager.train_dataparser_outputs.dataparser_transform
-        # row = torch.tensor([[0,0,0,1]],dtype=torch.float32,device=retc.camera_to_worlds.device)
-        # retc.camera_to_worlds = torch.matmul(torch.cat([H,row]),torch.cat([retc.camera_to_worlds,row]))[:3,:]
-        # retc.camera_to_worlds[:3,3] *= self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        # if not self.done_scale_calc:
-        #     return None,None,None
-        # return img_out, dep_out, retc
-
-    # @profile
-    def _undistort_image(self, camera: Cameras, distortion_params: np.ndarray, data: dict, image: np.ndarray, K: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Optional[torch.Tensor]]:
-        mask = None
-        if camera.camera_type.item() == CameraType.PERSPECTIVE.value:
-            distortion_params = np.array(
-                [
-                    distortion_params[0],
-                    distortion_params[1],
-                    distortion_params[4],
-                    distortion_params[5],
-                    distortion_params[2],
-                    distortion_params[3],
-                    0,
-                    0,
-                ]
-            )
-            if np.any(distortion_params):
-                newK, roi = cv2.getOptimalNewCameraMatrix(K, distortion_params, (image.shape[1], image.shape[0]), 0)
-                image = cv2.undistort(image, K, distortion_params, None, newK)  # type: ignore
-            else:
-                newK = K
-                roi = 0, 0, image.shape[1], image.shape[0]
-            # crop the image and update the intrinsics accordingly
-            x, y, w, h = roi
-            image = image[y : y + h, x : x + w]
-            if "depth_image" in data:
-                data["depth_image"] = data["depth_image"][y : y + h, x : x + w]
-            if "mask" in data:
-                mask = data["mask"].numpy()
-                mask = mask.astype(np.uint8) * 255
-                if np.any(distortion_params):
-                    mask = cv2.undistort(mask, K, distortion_params, None, newK)  # type: ignore
-                mask = mask[y : y + h, x : x + w]
-                mask = torch.from_numpy(mask).bool()
-            K = newK
-
-        elif camera.camera_type.item() == CameraType.FISHEYE.value:
-            distortion_params = np.array(
-                [distortion_params[0], distortion_params[1], distortion_params[2], distortion_params[3]]
-            )
-            newK = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-                K, distortion_params, (image.shape[1], image.shape[0]), np.eye(3), balance=0
-            )
-            map1, map2 = cv2.fisheye.initUndistortRectifyMap(
-                K, distortion_params, np.eye(3), newK, (image.shape[1], image.shape[0]), cv2.CV_32FC1
-            )
-            # and then remap:
-            image = cv2.remap(image, map1, map2, interpolation=cv2.INTER_LINEAR)
-            if "mask" in data:
-                mask = data["mask"].numpy()
-                mask = mask.astype(np.uint8) * 255
-                mask = cv2.fisheye.undistortImage(mask, K, distortion_params, None, newK)
-                mask = torch.from_numpy(mask).bool()
-            K = newK
-        elif camera.camera_type.item() == CameraType.FISHEYE624.value:
-            fisheye624_params = torch.cat(
-                [camera.fx, camera.fy, camera.cx, camera.cy, torch.from_numpy(distortion_params)], dim=0
-            )
-            assert fisheye624_params.shape == (16,)
-            assert (
-                "mask" not in data
-                and camera.metadata is not None
-                and "fisheye_crop_radius" in camera.metadata
-                and isinstance(camera.metadata["fisheye_crop_radius"], float)
-            )
-            fisheye_crop_radius = camera.metadata["fisheye_crop_radius"]
-
-            # Approximate the FOV of the unmasked region of the camera.
-            upper, lower, left, right = fisheye624_unproject_helper(
-                torch.tensor(
-                    [
-                        [camera.cx, camera.cy - fisheye_crop_radius],
-                        [camera.cx, camera.cy + fisheye_crop_radius],
-                        [camera.cx - fisheye_crop_radius, camera.cy],
-                        [camera.cx + fisheye_crop_radius, camera.cy],
-                    ],
-                    dtype=torch.float32,
-                )[None],
-                params=fisheye624_params[None],
-            ).squeeze(dim=0)
-            fov_radians = torch.max(
-                torch.acos(torch.sum(upper * lower / torch.linalg.norm(upper) / torch.linalg.norm(lower))),
-                torch.acos(torch.sum(left * right / torch.linalg.norm(left) / torch.linalg.norm(right))),
-            )
-
-            # Heuristics to determine parameters of an undistorted image.
-            undist_h = int(fisheye_crop_radius * 2)
-            undist_w = int(fisheye_crop_radius * 2)
-            undistort_focal = undist_h / (2 * torch.tan(fov_radians / 2.0))
-            undist_K = torch.eye(3)
-            undist_K[0, 0] = undistort_focal  # fx
-            undist_K[1, 1] = undistort_focal  # fy
-            undist_K[0, 2] = (undist_w - 1) / 2.0  # cx; for a 1x1 image, center should be at (0, 0).
-            undist_K[1, 2] = (undist_h - 1) / 2.0  # cy
-
-            # Undistorted 2D coordinates -> rays -> reproject to distorted UV coordinates.
-            undist_uv_homog = torch.stack(
-                [
-                    *torch.meshgrid(
-                        torch.arange(undist_w, dtype=torch.float32),
-                        torch.arange(undist_h, dtype=torch.float32),
-                    ),
-                    torch.ones((undist_w, undist_h), dtype=torch.float32),
-                ],
-                dim=-1,
-            )
-            assert undist_uv_homog.shape == (undist_w, undist_h, 3)
-            dist_uv = (
-                fisheye624_project(
-                    xyz=(
-                        torch.einsum(
-                            "ij,bj->bi",
-                            torch.linalg.inv(undist_K),
-                            undist_uv_homog.reshape((undist_w * undist_h, 3)),
-                        )[None]
-                    ),
-                    params=fisheye624_params[None, :],
-                )
-                .reshape((undist_w, undist_h, 2))
-                .numpy()
-            )
-            map1 = dist_uv[..., 1]
-            map2 = dist_uv[..., 0]
-
-            # Use correspondence to undistort image.
-            image = cv2.remap(image, map1, map2, interpolation=cv2.INTER_LINEAR)
-
-            # Compute undistorted mask as well.
-            dist_h = camera.height.item()
-            dist_w = camera.width.item()
-            mask = np.mgrid[:dist_h, :dist_w]
-            mask[0, ...] -= dist_h // 2
-            mask[1, ...] -= dist_w // 2
-            mask = np.linalg.norm(mask, axis=0) < fisheye_crop_radius
-            mask = torch.from_numpy(
-                cv2.remap(
-                    mask.astype(np.uint8) * 255,
-                    map1,
-                    map2,
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_CONSTANT,
-                    borderValue=0,
-                )
-                / 255.0
-            ).bool()[..., None]
-            assert mask.shape == (undist_h, undist_w, 1)
-            K = undist_K.numpy()
-        else:
-            raise NotImplementedError("Only perspective and fisheye cameras are supported")
-
-        return K, image, mask
 
 
     def process_query_diff(self, msg:ImagePose, step, clip_dict = None, dino_data = None):
@@ -607,14 +427,12 @@ class Trainer:
         image = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.img,'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1') / 1000. ,dtype = torch.float32)
         image, depth = image.to(self.device), depth.to(self.device)
-        fx = torch.tensor([msg.fl_x])
-        fy = torch.tensor([msg.fl_y])
-        cy = torch.tensor([msg.cy])
-        cx = torch.tensor([msg.cx])
-        # cx = torch.tensor([msg.cy])
-        # cy = torch.tensor([msg.cx])
-        width = torch.tensor([msg.w])
-        height = torch.tensor([msg.h])
+        fx = torch.tensor([msg.fl_x]) / self.config.image_downscale_factor
+        fy = torch.tensor([msg.fl_y]) / self.config.image_downscale_factor
+        cy = torch.tensor([msg.cy]) / self.config.image_downscale_factor
+        cx = torch.tensor([msg.cx]) / self.config.image_downscale_factor
+        width = torch.tensor([msg.w]) / self.config.image_downscale_factor
+        height = torch.tensor([msg.h]) / self.config.image_downscale_factor
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
         pose = Cameras(c2w, fx, fy, cx, cy, width, height, distortion_params, camera_type)
@@ -679,7 +497,7 @@ class Trainer:
             print(poses, affected_gaussians_idxs)
         # TODO: mask out regions in all training images
     
-    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 800, device = 'cuda:0'):
+    def deproject_to_RGB_point_cloud(self, image, depth_image, camera, num_samples = 500, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -712,11 +530,12 @@ class Trainer:
         # num_points = flat_depth.shape[0]
         # sampled_indices = torch.randint(0, num_points, (num_samples,))
         non_zero_depth_indices = torch.nonzero(flat_depth != 0).squeeze()
-
         # Ensure there are enough non-zero depth indices to sample from
         if non_zero_depth_indices.numel() < num_samples:
             num_samples = non_zero_depth_indices.numel()
         # Sample from non-zero depth indices
+        if num_samples == 0:
+            return torch.zeros((1, 3), device=device), torch.zeros((1, 3), device=device)
         sampled_indices = non_zero_depth_indices[torch.randint(0, non_zero_depth_indices.shape[0], (num_samples,))]
 
         sampled_depth = flat_depth[sampled_indices] * scale
@@ -738,7 +557,7 @@ class Trainer:
         
         return P_world[:, :3], sampled_image
     
-    def deproject_droidslam_point_cloud(self, colors, points, frame1, num_samples = 500, device = 'cuda:0'):
+    def deproject_droidslam_point_cloud(self, colors, points, frame1, num_samples = 100, device = 'cuda:0'):
         """
         Converts a depth image into a point cloud in world space using a Camera object.
         """
@@ -766,65 +585,44 @@ class Trainer:
         return P_world[:, :3], colors[sampled_indices]
     
     # @profile
-    def process_image(self, msg:ImagePose, step, points, clrs, clip_dict = None, dino_data = None):
+    def process_image(self, msg:ImagePose, step, points, clrs, camlr, clip_dict = None, dino_data = None):
         '''
         This function actually adds things to the dataset
         '''
-        # start = time.time()
-        camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
-        # CONSOLE.print("Adding image to dataset")
+        camera_to_worlds = None
+        cam_0_to_1 = self.pipeline.datamanager.train_dataset.cam_0_to_1 # ZED_L to Realsense
+        cam_1_to_2 = self.pipeline.datamanager.train_dataset.cam_1_to_2 # Realsense to ZED_R
+        cam_0_to_2 = self.pipeline.datamanager.train_dataset.cam_0_to_2 # ZED_L to ZED_R
+        
+        if camlr == 0:
+            camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+        elif camlr == 1:
+            camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+            row = torch.tensor([[0,0,0,1]],dtype=torch.float32)
+            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), cam_0_to_1)[:3,:]
+        elif camlr == 2:
+            camera_to_worlds = ros_pose_to_nerfstudio(msg.pose)
+            row = torch.tensor([[0,0,0,1]],dtype=torch.float32)
+            camera_to_worlds = torch.matmul(torch.cat([camera_to_worlds,row]), cam_0_to_2)[:3,:]
+        
         image_data = torch.tensor(self.cvbridge.compressed_imgmsg_to_cv2(msg.img, 'rgb8'),dtype = torch.float32)/255.
         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
-        # import pdb; pdb.set_trace()
-        fx = torch.tensor([msg.fl_x])
-        fy = torch.tensor([msg.fl_y])
-        cy = torch.tensor([msg.cy])
-        cx = torch.tensor([msg.cx])
-        # print('fx', fx, 'fy', fy, 'cx', cx, 'cy', cy)
-        # import pdb; pdb.set_trace()
+        fx = torch.tensor([msg.fl_x]) / self.config.image_downscale_factor
+        fy = torch.tensor([msg.fl_y]) / self.config.image_downscale_factor
+        cy = torch.tensor([msg.cy]) / self.config.image_downscale_factor
+        cx = torch.tensor([msg.cx]) / self.config.image_downscale_factor
 
-        # cx = torch.tensor([msg.cy])
-        # cy = torch.tensor([msg.cx])
-        # width = torch.tensor([msg.w])
-        # height = torch.tensor([msg.h])
-        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        # camera_type = CameraType.PERSPECTIVE
-        # c = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
-
-        ### Multicamera Support
-        width = torch.tensor([msg.w])
-        height = torch.tensor([msg.h])
+        width = torch.tensor([msg.w]) // self.config.image_downscale_factor
+        height = torch.tensor([msg.h]) // self.config.image_downscale_factor
         distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
         camera_type = CameraType.PERSPECTIVE
-        camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type).reshape(())
-        # K = camera.get_intrinsics_matrices().numpy()
 
-        # if self.multicam:
-        #     crop_top = 60
-        #     crop_bottom = 480 - 60
-        #     if msg.w != msg.img.width or msg.h != msg.img.height:
-        #         # crop image_data to new_W new_H centered
-        #         image_data = image_data[crop_top:crop_bottom, :, :].permute(2, 0, 1).unsqueeze(0)
-        #         # print('after croppping', image_data.shape)
-        #         import torch.nn.functional as F
-        #         image_data = F.interpolate(image_data, size=(msg.img.height, msg.img.width), mode='bilinear', align_corners=False)
-        #         # back to HxWxC
-        #         image_data = image_data.permute(2, 3, 1, 0)[:,:,:,0]
-        #         # print('after resize', image_data.shape)
-        # K, image_data, mask = self._undistort_image(camera, get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3).numpy(), {}, image_data.cpu().numpy(), K)
-        # image_data = torch.from_numpy(image_data).to(torch.float32)
-        # fx = float(K[0, 0])
-        # fy = float(K[1, 1])
-        # cx = float(K[0, 2])
-        # cy = float(K[1, 2])
-        # width = image_data.shape[1]
-        # height = image_data.shape[0]
-        # distortion_params = get_distortion_params(k1=msg.k1,k2=msg.k2,k3=msg.k3)
-        # camera_type = CameraType.PERSPECTIVE
-        # camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type)
+        metadata = {"camlr": camlr}
+        camera = Cameras(camera_to_worlds, fx, fy, cx, cy, width, height, distortion_params, camera_type, metadata = metadata).reshape(())
 
         with self.train_lock:
-            self.pipeline.process_image(img = image_data, depth = depth, pose = camera, clip=clip_dict, dino=dino_data)
+            depth = None # Changed since image downres + DROIDSLAM
+            self.pipeline.process_image(img = image_data, depth = depth, pose = camera, clip=clip_dict, dino=dino_data, downscale_factor=self.config.image_downscale_factor)
         # print("Done processing image")
         image_uint8 = (image_data * 255).detach().type(torch.uint8)
         image_uint8 = image_uint8.permute(2, 0, 1)
@@ -838,21 +636,11 @@ class Trainer:
         R = vtf.SO3.from_matrix(c2w[:3, :3])
         R = R @ vtf.SO3.from_x_radians(np.pi)
         cidx = self.viewer_state._pick_drawn_image_idxs(idx+1)[-1]
-        # scale_factor = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
-        # camera_handle = self.viser_server.add_camera_frustum(
-        #         name=f"/cameras/camera_{idx:05d}",
-        #         fov=float(2 * np.arctan(camera.cx / camera.fx[0])),
-        #         scale=self.config.camera_frustum_scale,
-        #         aspect=float(camera.cx[0] / camera.cy[0]),
-        #         image=image_uint8,
-        #         wxyz=R.wxyz,
-        #         position=c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO,
-        #     )
-        # scale = self.pipeline.datamanager.train_dataparser_outputs.dataparser_scale
+
         camera_handle = self.viewer_state.viser_server.add_camera_frustum(
                     name=f"/cameras/camera_{cidx:05d}",
                     fov=2 * np.arctan(float(dataset_cam.cx / dataset_cam.fx[0])),
-                    scale= 0.5,
+                    scale = 0.20,
                     aspect=float(dataset_cam.cx[0] / dataset_cam.cy[0]),
                     image=image_uint8,
                     wxyz=R.wxyz,
@@ -905,49 +693,46 @@ class Trainer:
                 deprojected, colors = self.deproject_droidslam_point_cloud(clrs, points, frame1)
                 self.deprojected_queue.append(deprojected)
                 self.colors_queue.append(colors)
-            # else:
-            #     project_interval = 3
-            #     rs_interval = 3
-            #     if self.done_scale_calc and msg.depth.encoding != '' and idx % rs_interval == 0:
-            #         depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'16UC1').astype(np.int16),dtype = torch.int16)/1000.
-            #         depth = depth.unsqueeze(0).unsqueeze(0)
-            #         if depth.shape[2] != image_data.shape[0] or depth.shape[3] != image_data.shape[1]:
-            #             import torch.nn.functional as F
-            #             depth = F.interpolate(depth, size=(image_data.shape[0], image_data.shape[1]), mode='bilinear', align_corners=False)
-            #         deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
-            #         self.deprojected_queue.extend(deprojected)
-            #         self.colors_queue.extend(colors)
-            #     elif self.done_scale_calc and msg.depth.encoding == '' and idx % project_interval == 0:
-            #         depth = self.pipeline.monodepth_inference(image_data.numpy())
-            #         # depth = torch.rand((1,1,480,640))
-            #         deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam) #, num_samples = 40)
-            #         self.deprojected_queue.extend(deprojected)
-            #         self.colors_queue.extend(colors)
+            # ZED
+            elif self.done_scale_calc and msg.depth.encoding != '' and camlr == 2: # and idx+1 % rs_interval == 0:
+                print("ZED RIGHT")
+                depth = torch.tensor(self.cvbridge.imgmsg_to_cv2(msg.depth,'32FC1').astype(np.float32),dtype = torch.float32)
+                depth = depth.unsqueeze(0).unsqueeze(0)
+                
+                deprojected, colors = self.deproject_to_RGB_point_cloud(image_data, depth, dataset_cam)
+                self.deprojected_queue.append(deprojected)
+                self.colors_queue.append(colors)
 
-    # def add_to_clip(clip_dict = None):
-    #     self.pipeline.add_to_clip
 
     def update_poses(self, BA_deltas, start_idx):
         idxs = list(self.viewer_state.camera_handles.keys())
         missed_depro = len(BA_deltas) - len(self.deprojected_queue)
-        for idx in range(start_idx, len(self.pipeline.datamanager.train_dataset)):
+        cam_factor = len(self.pipeline.datamanager.train_dataset) // len(BA_deltas)
+        for idx in range(start_idx, len(BA_deltas)):
 
             C = self.pipeline.datamanager.train_dataset.cameras
 
-            c2w = C.camera_to_worlds[idx,...]
+            c2w = C.camera_to_worlds[idx * cam_factor,...]
 
             R = vtf.SO3.from_matrix(c2w[:3, :3])
             R = R @ vtf.SO3.from_x_radians(np.pi)
-            self.viewer_state.camera_handles[idxs[idx]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
-            self.viewer_state.camera_handles[idxs[idx]].wxyz = R.wxyz
+            self.viewer_state.camera_handles[idxs[idx * cam_factor]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
+            self.viewer_state.camera_handles[idxs[idx * cam_factor]].wxyz = R.wxyz
 
-            if idx > missed_depro:
-                if start_idx == 0:
-                    points_homog = torch.cat([self.deprojected_queue[idx-missed_depro-1], torch.ones((self.deprojected_queue[idx-missed_depro-1].shape[0], 1), device='cuda:0')], dim=1)
-                    self.deprojected_queue[idx-missed_depro-1] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
-                else:
-                    points_homog = torch.cat([self.deprojected_queue[idx-start_idx], torch.ones((self.deprojected_queue[idx-start_idx].shape[0], 1), device='cuda:0')], dim=1)
-                    self.deprojected_queue[idx-start_idx] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
+            for i in range(1, cam_factor):
+                c2w = C.camera_to_worlds[idx * cam_factor + i, ...]
+                R = vtf.SO3.from_matrix(c2w[:3, :3])
+                R = R @ vtf.SO3.from_x_radians(np.pi)
+                self.viewer_state.camera_handles[idxs[idx * cam_factor + i]].position = np.array(c2w[:3, 3] * VISER_NERFSTUDIO_SCALE_RATIO)
+                self.viewer_state.camera_handles[idxs[idx * cam_factor + i]].wxyz = R.wxyz
+
+            # if idx > missed_depro:
+            #     if start_idx == 0:
+            #         points_homog = torch.cat([self.deprojected_queue[idx-missed_depro-1], torch.ones((self.deprojected_queue[idx-missed_depro-1].shape[0], 1), device='cuda:0')], dim=1)
+            #         self.deprojected_queue[idx-missed_depro-1] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
+                # else:
+                #     points_homog = torch.cat([self.deprojected_queue[idx-start_idx], torch.ones((self.deprojected_queue[idx-start_idx].shape[0], 1), device='cuda:0')], dim=1)
+                #     self.deprojected_queue[idx-start_idx] = (torch.matmul(BA_deltas[idx].to('cuda:0'), points_homog.T).T)[:, :3]
         self.start_idx = len(self.pipeline.datamanager.train_dataset)
 
     def setup(self, test_mode: Literal["test", "val", "inference"] = "val") -> None:
@@ -1073,6 +858,8 @@ class Trainer:
             self.imgidx = 0
             
             while True:
+                if self.pipeline.model.localized_query is not None:
+                    self.localized_coords = self.pipeline.model.localized_query
                 rclpy.spin_once(trainer_node,timeout_sec=0.00)
 
                 has_image_add = len(self.image_add_callback_queue) > 0
@@ -1080,7 +867,7 @@ class Trainer:
                 prev_poses = None
                 if has_image_add:
                     #Not sure if we want to loop till the queue is empty or not
-                    msg, points, colors, prev_poses, pp_sig = self.image_add_callback_queue.pop(0)
+                    msg, points, colors, prev_poses, pp_sig, cam_lr = self.image_add_callback_queue.pop(0)
 
                     # if we are actively calculating diff for the current scene,
                     # we don't want to add the image to the dataset unless we are sure.
@@ -1092,15 +879,15 @@ class Trainer:
 
                         else:
                             self.add_to_clip_queue.append(msg)
-                            self.image_process_queue.append((msg, points, colors))
+                            self.image_process_queue.append((msg, points, colors, cam_lr))
                             self.imgidx += 1
 
                         if not self.done_scale_calc:
                             parser_scale_list.append(msg.pose)
                         
                 while len(self.image_process_queue) > 0:
-                    message, pts, clrs = self.image_process_queue.pop(0)
-                    self.process_image(message, step, pts, clrs)
+                    message, pts, clrs, camlr = self.image_process_queue.pop(0)
+                    self.process_image(message, step, pts, clrs, camlr)
                 
                 if self.train_lerf and len(self.add_to_clip_queue) > 0:
                     self.add_img_callback(self.add_to_clip_queue.pop(0))
@@ -1202,7 +989,7 @@ class Trainer:
                             if group == 'lerf':
                                 continue
                             expain.append("exp_avg" in self.optimizers.optimizers[group].state[self.optimizers.optimizers[group].param_groups[0]["params"][0]].keys())
-                        if all(expain) and BA_flag:
+                        if all(expain): # and BA_flag:
                             self.pipeline.model.deprojected_new.extend(pop_n_elements(self.deprojected_queue, num_add))
                             self.pipeline.model.colors_new.extend(pop_n_elements(self.colors_queue, num_add))
 
@@ -1431,6 +1218,7 @@ class Trainer:
             # elapsed = str((end-start)*1e3)
             # print("get_train_loss time: "+ elapsed + "(ms)")
             loss = functools.reduce(torch.add, loss_dict.values())
+        
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [
             group

@@ -29,13 +29,21 @@ class L3GSDataParserConfig(DataParserConfig):
     aabb_scale: float = 1.0
     """ SceneBox aabb scale."""
     num_images: int = 1000
+    # img_height: int = 480 // 4
+    # img_width: int = 848 // 4
     img_height: int = 480
     img_width: int = 848
-    depth_height: int = 480 
+    image_downscale_factor: int = 4
+    """Anti-aliased image downresolution factor."""
+    depth_height: int = 480
     depth_width: int = 848
     # img_height: int = 512
     # img_width: int = 960
     # depth_height: int = 512
+    # depth_width: int = 960
+    # img_height: int = 540
+    # img_width: int = 960
+    # depth_height: int = 540
     # depth_width: int = 960
 
 @dataclass
@@ -69,9 +77,9 @@ class L3GSDataParser(DataParser):
                 pre-allocate tensors for the Cameras object that tracks camera pose.
         """
         meta = {}
-
-        image_height = self.config.img_height
-        image_width = self.config.img_width
+        image_downscale_factor = self.config.image_downscale_factor
+        image_height = self.config.img_height // self.config.image_downscale_factor
+        image_width = self.config.img_width // self.config.image_downscale_factor
         depth_height = self.config.depth_height
         depth_width = self.config.depth_width
         #placeholders
@@ -124,7 +132,8 @@ class L3GSDataParser(DataParser):
             "image_height": image_height,
             "image_width": image_width,
             "depth_height": depth_height,
-            "depth_width": depth_width
+            "depth_width": depth_width,
+            "image_downscale_factor": image_downscale_factor,
         }
 
         # Pointcloud or random
