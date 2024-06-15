@@ -1210,8 +1210,8 @@ class LLGaussianSplattingModel(SplatfactoModel):
             # )
             self.viewer_control.viser_server.add_icosphere(
             "/query",
-            radius = self.best_scales[0], 
-            color = (1.0, 0.0, 0.0),
+            radius = self.best_scales[0].item(), 
+            color = (1.0, 1.0, 1.0),
             position=(query[0], query[1], query[2]),
             )
 
@@ -1221,11 +1221,11 @@ class LLGaussianSplattingModel(SplatfactoModel):
 
             inv_H = torch.cat([torch.cat([H[:3, :3].transpose(1, 0), -H[:3, 3:]], dim=1), row], dim=0)
             query_world = inv_H @ torch.tensor([query[0], query[1], query[2], 1],dtype=torch.float32,device=H.device)
-            print(query_world / VISER_NERFSTUDIO_SCALE_RATIO)
+            print("Query Location:", query_world / VISER_NERFSTUDIO_SCALE_RATIO)
+            print("Best Scale:", self.best_scales[0].item())
 
             self.localized_query = query_world[:3].cpu().numpy() / VISER_NERFSTUDIO_SCALE_RATIO
             
-
             # self._crop_handle = self.viewer_control.viser_server.add_transform_controls("Crop Points", depth_test=False, line_width=4.0)
             # world_center = tuple(p / self.viser_scale_ratio for p in self._crop_center_init)
             # self._crop_handle.position = world_center
