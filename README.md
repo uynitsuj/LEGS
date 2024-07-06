@@ -11,6 +11,8 @@ Life-Long Language Embedded Gaussian Splats follows the integration guidelines d
  ***If you'll be using ROS messages do not use a conda environment and enter the dependency install commands below instead*** (ROS and conda don't play well together)
 
  ```
+ conda create --name l3gs_env2 -y python=3.10.14
+ conda activate l3gs_env2
  pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
  pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
  ```
