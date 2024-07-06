@@ -1,0 +1,3 @@
+[submodule "legs_ws/src"]
+	path = legs_ws/src
+	url = https://github.com/BerkeleyAutomation/legs_ros_ws
