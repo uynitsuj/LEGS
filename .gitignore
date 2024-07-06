@@ -20,3 +20,7 @@ l3gs/outputs/unnamed/
 l3gs/outputs/*
 
 __pycache__/
+
+legs_ws/build/*
+legs_ws/install/*
+legs_ws/log/*
