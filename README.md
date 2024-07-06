@@ -16,7 +16,11 @@ Life-Long Language Embedded Gaussian Splats follows the integration guidelines d
  ```
 ### 1. Clone and install repo
 ```
-git clone https://github.com/BerkeleyAutomation/L3GS
+git clone --recurse-submodules https://github.com/BerkeleyAutomation/L3GS
+source /opt/ros/humble/setup.bash
+cd L3gs/legs_ws
+colcon build --packages-select lifelong_msgs
+. install/setup.bash
 cd L3GS/l3gs/
 python -m pip install -e .
 ns-install-cli
