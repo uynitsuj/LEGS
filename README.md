@@ -4,7 +4,9 @@
 </div>-->
 
 # Installation
-Life-Long Language Embedded Gaussian Splats follows the integration guidelines described [here](https://docs.nerf.studio/developer_guides/new_methods.html) for custom methods within Nerfstudio. 
+Life-Long Language Embedded Gaussian Splats follows the integration guidelines described [here](https://docs.nerf.studio/developer_guides/new_methods.html) for custom methods within Nerfstudio.
+
+To learn more about the code we use to interface with the robot and collect image poses, see this repo [here](https://github.com/BerkeleyAutomation/legs_ros_ws), which outlines our ROS2 interface.
 ### 0. Install Nerfstudio dependencies
 [Follow these instructions](https://docs.nerf.studio/quickstart/installation.html) up to and including "tinycudann" to install dependencies.
 
