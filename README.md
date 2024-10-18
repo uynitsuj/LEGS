@@ -67,3 +67,11 @@ If you find this useful, please cite the paper!
 &nbsp;year = {2023},
 } </pre>
 -->
+## Bibtex
+If you find this useful, please cite the paper!
+<pre id="codecell0">@article{yu2024language,
+&nbsp;author = {Yu, Justin and Hari, Kush and Srinivas, Kishore and El-Refai, Karim and Rashid, Adam and Kim, Chung Min and Kerr, Justin and Cheng, Richard and Irshad, Muhammad Zubair and Balakrishna, Ashwin and Kollar, Thomas and Goldberg, Ken},
+&nbsp;title = {Language-Embedded Gaussian Splats (LEGS): Incrementally Building Room-Scale Representations with a Mobile Robot},
+&nbsp;booktitle = {International Conference on Intelligent Robots and Systems (IROS)},
+&nbsp;year = {2024},
+} </pre>
