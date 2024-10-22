@@ -1,7 +1,24 @@
 # Language Embedded Gaussian Splats (LEGS)
-<!--<div align='center'>
-<img src="https://www.lerf.io/data/nerf_render.svg" height="230px">
-</div>-->
+<div align="center">
+
+[[Website]](https://berkeleyautomation.github.io/LEGS/)
+[[PDF]](https://autolab.berkeley.edu/assets/publications/media/2024_IROS_LEGS_CR.pdf)
+[[Arxiv]](https://arxiv.org/abs/2409.18108)
+
+<!-- insert figure -->
+<!-- <img src="assets/joint.gif" width="600px"/> -->
+[![Kitchen Queries](https://img.youtube.com/vi/SubSWU1wJak/maxresdefault.jpg)](https://youtu.be/SubSWU1wJak)
+
+[![Grocery Store Queries](https://img.youtube.com/vi/NA3m16Cgdm4/maxresdefault.jpg)](https://youtu.be/NA3m16Cgdm4)
+
+
+</div>
+
+This repository contains the code for the paper "Language-Embedded Gaussian Splats (LEGS): Incrementally Building Room-Scale Representations with a Mobile Robot".
+
+Model-based diffusion (MBD) is a novel **diffusion-based trajectory optimization** framework that employs a **dynamics model** to approximate the score function. 
+MBD outperforms existing methods (including RL) in terms of sample efficiency and generalization.
+
 
 # Installation
 Language Embedded Gaussian Splats follows the integration guidelines described [here](https://docs.nerf.studio/developer_guides/new_methods.html) for custom methods within Nerfstudio.
