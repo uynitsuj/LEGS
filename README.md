@@ -7,10 +7,9 @@
 
 <!-- insert figure -->
 <!-- <img src="assets/joint.gif" width="600px"/> -->
-[![Kitchen Queries](https://img.youtube.com/vi/SubSWU1wJak/maxresdefault.jpg)](https://youtu.be/SubSWU1wJak)
+[![Kitchen Queries](media/KitchenQueries.gif)](https://youtu.be/SubSWU1wJak)
 
-[![Grocery Store Queries](https://img.youtube.com/vi/NA3m16Cgdm4/maxresdefault.jpg)](https://youtu.be/NA3m16Cgdm4)
-
+[![Grocery Store Queries](media/GroceryStoreQueries.gif)](https://youtu.be/NA3m16Cgdm4)
 
 </div>
 
