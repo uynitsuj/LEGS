@@ -1,10 +1,10 @@
-# Life-Long Language Embedded Gaussian Splats (L3GS)
+# Language Embedded Gaussian Splats (LEGS)
 <!--<div align='center'>
 <img src="https://www.lerf.io/data/nerf_render.svg" height="230px">
 </div>-->
 
 # Installation
-Life-Long Language Embedded Gaussian Splats follows the integration guidelines described [here](https://docs.nerf.studio/developer_guides/new_methods.html) for custom methods within Nerfstudio.
+Language Embedded Gaussian Splats follows the integration guidelines described [here](https://docs.nerf.studio/developer_guides/new_methods.html) for custom methods within Nerfstudio.
 
 To learn more about the code we use to interface with the robot and collect image poses, see this repo [here](https://github.com/BerkeleyAutomation/legs_ros_ws), which outlines our ROS2 interface.
 ### 0. Install Nerfstudio dependencies
