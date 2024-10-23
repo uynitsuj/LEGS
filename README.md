@@ -15,9 +15,6 @@
 
 This repository contains the code for the paper "Language-Embedded Gaussian Splats (LEGS): Incrementally Building Room-Scale Representations with a Mobile Robot".
 
-Model-based diffusion (MBD) is a novel **diffusion-based trajectory optimization** framework that employs a **dynamics model** to approximate the score function. 
-MBD outperforms existing methods (including RL) in terms of sample efficiency and generalization.
-
 
 # Installation
 Language Embedded Gaussian Splats follows the integration guidelines described [here](https://docs.nerf.studio/developer_guides/new_methods.html) for custom methods within Nerfstudio.
