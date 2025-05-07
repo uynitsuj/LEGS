@@ -43,7 +43,7 @@ Run `ns-train -h`: you should see a list of "subcommands" with lllegos and llgs 
 - Connect to the viewer by forwarding the viewer port (we use VSCode to do this), and click the link to `viewer.nerf.studio` provided in the output of the train script
 
 ## Bibtex
-If you find LEGS useful for your work please cite:
+If you find LEGS useful for your work please consider citing:
 ```
 @inproceedings{yu2024language,
         title={Language-embedded gaussian splats (legs): Incrementally building room-scale representations with a mobile robot},
